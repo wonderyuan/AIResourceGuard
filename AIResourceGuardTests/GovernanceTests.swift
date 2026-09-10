@@ -35,7 +35,7 @@ final class BaselineTrackerTests: XCTestCase {
                                        groups: [group(name: "ZCode", rssMB: 2400)])
         XCTAssertEqual(context.deviatingGroups.count, 1)
         XCTAssertEqual(context.deviatingGroups.first?.name, "ZCode")
-        XCTAssertEqual(tracker.groupMeanFootprintMB(displayName: "ZCode") ?? 0, 500, accuracy: 50)
+        XCTAssertEqual(tracker.groupMeanFootprintMB(groupKey: "exe:ZCode") ?? 0, 500, accuracy: 50)
     }
 
     func testBootstrapIgnoresAbnormalSnapshots() {

@@ -6,34 +6,32 @@ import UniformTypeIdentifiers
 /// pages are plain forms with generous spacing — no card grids.
 struct SettingsView: View {
     enum Section: String, Hashable, Identifiable, CaseIterable {
-        case general, protection, apps, policy, history, about
+        case protection, apps, history, general, about
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
-            case .general: return "通用"
-            case .protection: return "自动保护"
-            case .apps: return "应用管理"
-            case .policy: return "风险策略"
+            case .protection: return "保护方式"
+            case .apps: return "每个应用"
             case .history: return "历史记录"
+            case .general: return "通用"
             case .about: return "关于"
             }
         }
 
         var symbol: String {
             switch self {
-            case .general: return "gearshape"
             case .protection: return "shield.lefthalf.filled"
             case .apps: return "square.grid.2x2"
-            case .policy: return "gauge.with.dots.needle.67percent"
             case .history: return "clock.arrow.circlepath"
+            case .general: return "gearshape"
             case .about: return "info.circle"
             }
         }
     }
 
-    @State private var section: Section = .general
+    @State private var section: Section = .protection
 
     var body: some View {
         NavigationSplitView {
@@ -48,11 +46,10 @@ struct SettingsView: View {
         } detail: {
             Group {
                 switch section {
-                case .general: GeneralPage()
                 case .protection: ProtectionPage()
                 case .apps: AppsPage()
-                case .policy: PolicyPage()
                 case .history: HistoryPage()
+                case .general: GeneralPage()
                 case .about: AboutPage()
                 }
             }
@@ -111,48 +108,107 @@ private struct GeneralPage: View {
     }
 }
 
-// MARK: - 自动保护
+// MARK: - 保护方式
 
+/// The operation model: HOW to protect (mode), HOW HARD (intensity), with
+/// raw numbers tucked into 高级设置 — not a wall of steppers.
 private struct ProtectionPage: View {
     @EnvironmentObject var settings: SettingsStore
+
+    /// 0 = 仅观察, 1 = 自动暂停, 2 = 紧急终止能力.
+    private var mode: Int {
+        if settings.settings.emergencyKillEnabled { return 2 }
+        return settings.settings.autoProtectionEnabled ? 1 : 0
+    }
 
     var body: some View {
         Form {
             Section {
-                Toggle("自动保护", isOn: $settings.settings.autoProtectionEnabled)
-                Toggle("恢复正常后逐步恢复已暂停的任务", isOn: $settings.settings.autoResumeOnNormal)
+                Picker("保护方式", selection: Binding(
+                    get: { mode },
+                    set: { applyMode($0) })) {
+                    Text("仅观察").tag(0)
+                    Text("自动暂停").tag(1)
+                    Text("紧急终止").tag(2)
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+
+                Text(modeDescription)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("出事的时候，允许它做到哪一步")
+            }
+
+            Section {
+                Picker("反应强度", selection: sensitivityBinding) {
+                    Text("宽松").tag(Sensitivity.relaxed)
+                    Text("推荐").tag(Sensitivity.recommended)
+                    Text("灵敏").tag(Sensitivity.sensitive)
+                }
+                .pickerStyle(.segmented)
+                if settings.settings.thresholds.sensitivity == .custom {
+                    Label("当前为自定义配置", systemImage: "slider.horizontal.3")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("强度")
             } footer: {
-                Text("系统濒临失控时，自动暂停「应用管理」中启用自动暂停的应用。挑选目标时会避开你正在使用的前台应用。默认不处理任何应用。")
+                Text("决定多快升级风险、多早出手。「宽松」适合长期高负载，「灵敏」适合内存常年紧张的机器。")
                     .font(.caption2)
             }
 
             Section {
-                Stepper("恢复前观察 \(Int(settings.settings.thresholds.recoveryWindowSeconds)) 秒",
-                        value: $settings.settings.thresholds.recoveryWindowSeconds, in: 15...600, step: 15)
-                Stepper("逐个恢复间隔 \(Int(settings.settings.thresholds.recoveryObserveSeconds)) 秒",
-                        value: $settings.settings.thresholds.recoveryObserveSeconds, in: 15...300, step: 15)
-            } header: {
-                Text("温和恢复")
+                DisclosureGroup("高级设置") {
+                    AdvancedThresholdsView()
+                }
+                .font(.callout)
             } footer: {
-                Text("每次只恢复一个任务并观察一段时间；若系统再次承压，刚恢复的任务会被重新暂停。")
+                Text("手动调整后强度会变为「自定义」。")
                     .font(.caption2)
-            }
-
-            Section {
-                Toggle("紧急终止", isOn: $settings.settings.emergencyKillEnabled)
-                Stepper("持续「即将失控」\(settings.settings.emergencyKillDelaySeconds) 秒后发送 SIGTERM",
-                        value: $settings.settings.emergencyKillDelaySeconds, in: 10...300, step: 5)
-                Stepper("SIGTERM 宽限 \(settings.settings.emergencyKillGraceSeconds) 秒后才允许 SIGKILL",
-                        value: $settings.settings.emergencyKillGraceSeconds, in: 5...120, step: 5)
-            } header: {
-                Text("紧急终止")
-            } footer: {
-                Text("仅对单独启用「紧急终止」的应用生效。SIGKILL 永远只是最后手段；系统进程无论如何都不会被自动处理。")
-                    .font(.caption2)
-                    .foregroundStyle(.red)
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var modeDescription: String {
+        switch mode {
+        case 0:
+            return "只提醒，不动作。系统濒临失控时你会收到通知，由你自己决定怎么处理。"
+        case 1:
+            return "系统濒临失控时，自动暂停「每个应用」里设为自动暂停的应用。会避开你正在使用的应用，压力回落后逐步恢复。"
+        default:
+            return "在自动暂停之上：若「即将失控」持续一段时间，对单独允许的应用先温和请求退出，仍无响应才强制结束。系统进程永远不会被自动处理。"
+        }
+    }
+
+    private func applyMode(_ newMode: Int) {
+        switch newMode {
+        case 0:
+            settings.settings.autoProtectionEnabled = false
+            settings.settings.emergencyKillEnabled = false
+        case 1:
+            settings.settings.autoProtectionEnabled = true
+            settings.settings.emergencyKillEnabled = false
+        default:
+            settings.settings.autoProtectionEnabled = true
+            settings.settings.emergencyKillEnabled = true
+        }
+    }
+
+    private var sensitivityBinding: Binding<Sensitivity> {
+        Binding(
+            get: { settings.settings.thresholds.sensitivity == .custom
+                    ? .recommended : settings.settings.thresholds.sensitivity },
+            set: { choice in
+                if let preset = ThresholdConfig.preset(choice) {
+                    settings.settings.thresholds = preset
+                    settings.settings.thresholds.sensitivity = choice
+                }
+            })
     }
 }
 
@@ -165,9 +221,9 @@ private struct AppsPage: View {
 
     var body: some View {
         List {
-            Section("托管 — 允许自动保护处理（默认全部关闭）") {
+            Section("设定每个应用的处理方式") {
                 if settings.settings.managedApps.isEmpty {
-                    Text("暂无托管应用").font(.caption).foregroundStyle(.secondary)
+                    Text("还没有应用加入管理。").font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach($settings.settings.managedApps) { $managed in
                     ManagedAppRow(managed: $managed)
@@ -180,7 +236,7 @@ private struct AppsPage: View {
                         && group.totalFootprint > 10 * 1_048_576
                 }
                 if candidates.isEmpty {
-                    Text("当前没有新的应用").font(.caption).foregroundStyle(.secondary)
+                    Text("当前没有新的应用。").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(candidates) { group in
                         HStack(spacing: 10) {
@@ -242,6 +298,11 @@ private struct ManagedAppRow: View {
     @EnvironmentObject var store: MonitorCenter
     @Binding var managed: ManagedAppConfig
 
+    /// 0 = 观察, 1 = 自动暂停, 2 = 自动暂停＋紧急终止.
+    private var policy: Int {
+        managed.allowEmergencyTerminate ? 2 : (managed.allowAutoPause ? 1 : 0)
+    }
+
     private var iconPath: String? {
         managed.iconPath
             ?? store.groups.first { $0.key == managed.key }?.iconPath
@@ -250,16 +311,21 @@ private struct ManagedAppRow: View {
     var body: some View {
         HStack(spacing: 10) {
             AppIconView(path: iconPath)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(managed.displayName).font(.callout)
-                HStack(spacing: 14) {
-                    Toggle("自动暂停", isOn: $managed.allowAutoPause)
-                    Toggle("紧急终止", isOn: $managed.allowEmergencyTerminate)
-                }
-                .toggleStyle(.checkbox)
-                .font(.caption)
+                Text(policyText).font(.caption2).foregroundStyle(.tertiary)
             }
             Spacer()
+            Menu {
+                Button("只观察") { apply(0) }
+                Button("濒临失控时自动暂停") { apply(1) }
+                Button("自动暂停，且允许紧急终止") { apply(2) }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 14))
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 34)
             Button {
                 settings.removeManaged(key: managed.key)
             } label: {
@@ -269,6 +335,28 @@ private struct ManagedAppRow: View {
             .help("移除")
         }
         .padding(.vertical, 2)
+    }
+
+    private var policyText: String {
+        switch policy {
+        case 0: return "只观察"
+        case 1: return "濒临失控时自动暂停"
+        default: return "自动暂停，且允许紧急终止"
+        }
+    }
+
+    private func apply(_ value: Int) {
+        switch value {
+        case 0:
+            managed.allowAutoPause = false
+            managed.allowEmergencyTerminate = false
+        case 1:
+            managed.allowAutoPause = true
+            managed.allowEmergencyTerminate = false
+        default:
+            managed.allowAutoPause = true
+            managed.allowEmergencyTerminate = true
+        }
     }
 }
 
@@ -342,56 +430,6 @@ private struct ProtectedSection: View {
             return group.displayName
         }
         return key
-    }
-}
-
-// MARK: - 风险策略
-
-private struct PolicyPage: View {
-    @EnvironmentObject var settings: SettingsStore
-
-    var body: some View {
-        Form {
-            Section {
-                Picker("保护灵敏度", selection: sensitivityBinding) {
-                    Text("宽松").tag(Sensitivity.relaxed)
-                    Text("推荐").tag(Sensitivity.recommended)
-                    Text("灵敏").tag(Sensitivity.sensitive)
-                }
-                .pickerStyle(.segmented)
-                if settings.settings.thresholds.sensitivity == .custom {
-                    Label("当前为自定义配置", systemImage: "slider.horizontal.3")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } footer: {
-                Text("灵敏度决定多快升级风险等级、多早采取行动。「宽松」适合长期高负载的机器，「灵敏」适合接近极限的内存配置。")
-                    .font(.caption2)
-            }
-
-            Section {
-                DisclosureGroup("高级设置") {
-                    AdvancedThresholdsView()
-                }
-                .font(.callout)
-            } footer: {
-                Text("手动调整后灵敏度将变为「自定义」。")
-                    .font(.caption2)
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var sensitivityBinding: Binding<Sensitivity> {
-        Binding(
-            get: { settings.settings.thresholds.sensitivity == .custom
-                    ? .recommended : settings.settings.thresholds.sensitivity },
-            set: { choice in
-                if let preset = ThresholdConfig.preset(choice) {
-                    settings.settings.thresholds = preset
-                    settings.settings.thresholds.sensitivity = choice
-                }
-            })
     }
 }
 

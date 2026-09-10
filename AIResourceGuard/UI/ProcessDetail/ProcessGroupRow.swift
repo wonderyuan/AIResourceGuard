@@ -28,20 +28,10 @@ struct ProcessGroupRow: View {
                                 .font(.callout)
                                 .lineLimit(1)
                             if group.isRiskSource {
-                                Text("风险源")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(.orange.opacity(0.18), in: Capsule())
-                                    .foregroundStyle(.orange)
+                                Text("增长异常").tagStyle(.orange)
                             }
                             if group.isStaleWorkload {
-                                Text("疑似残留")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(.teal.opacity(0.15), in: Capsule())
-                                    .foregroundStyle(.teal)
+                                Text("遗留任务").tagStyle(.teal)
                             }
                             if isProtected {
                                 Image(systemName: "lock.fill")
@@ -86,7 +76,7 @@ struct ProcessGroupRow: View {
     private var subtitle: String {
         var parts = ["\(group.processes.count) 个进程 · CPU \(cpuText)"]
         if group.isStaleWorkload {
-            parts.append("已闲置 \(Int(group.ageSeconds / 60)) 分钟")
+            parts.append("闲置 \(Int(group.ageSeconds / 60)) 分钟")
         }
         return parts.joined(separator: " · ")
     }
@@ -131,12 +121,7 @@ struct ProcessGroupRow: View {
                         .truncationMode(.middle)
                         .padding(.leading, parentPids.contains(proc.ppid) ? 10 : 0)
                     if proc.isMCP {
-                        Text("MCP")
-                            .font(.system(size: 9, weight: .semibold))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.blue.opacity(0.15), in: Capsule())
-                            .foregroundStyle(.blue)
+                        Text("MCP").tagStyle(.blue)
                     }
                     Spacer()
                     if proc.isStopped {
@@ -163,7 +148,7 @@ struct ProcessGroupRow: View {
 
             HStack(spacing: 8) {
                 if group.isStaleWorkload {
-                    Button("清理残留任务") { confirmTerminate = true }
+                    Button("结束遗留任务") { confirmTerminate = true }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .tint(.teal)
@@ -184,7 +169,7 @@ struct ProcessGroupRow: View {
             }
         }
         .padding(12)
-        .glassSurface()
+        .glassSurface(Design.Radius.panel)
         .confirmationDialog(
             "终止 \(group.displayName)？",
             isPresented: $confirmTerminate,

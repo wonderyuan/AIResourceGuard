@@ -56,6 +56,13 @@ final class MonitorCenter: ObservableObject {
     private var lastSnapshotAt: Date?
     private var lastHiddenPublishAt = Date.distantPast
     private var latestScanStats: ScanStats?
+    /// When the last process scan delivered (governance freshness gate).
+    private var lastScanAt: Date?
+    /// A governance decision is waiting for a fresh scan to arrive.
+    private var pendingGovernance = false
+    /// After a serious episode ends, the system behaves atypically for a
+    /// while — don't learn "normal" from it.
+    private var baselineQuarantineUntil: Date?
 
     private init() {
         let settingsStore = SettingsStore()
@@ -100,6 +107,9 @@ final class MonitorCenter: ObservableObject {
 
         // Seed the baseline from persisted history so it is useful at once.
         baseline.bootstrap(from: history.snapshotsSync(hours: 24))
+
+        // Resume tasks left frozen by a previous crashed session.
+        protection.recoverOrphanedTasks()
 
         // Safety net: never leave auto-paused tasks SIGSTOPped behind us.
         terminateObserver = NotificationCenter.default.addObserver(
@@ -163,9 +173,13 @@ final class MonitorCenter: ObservableObject {
         let result = riskEngine.evaluate(input)
         assessment = result
 
-        // Learn "normal" only while things are (close to) normal, so real
-        // incidents never pollute the baseline.
-        if result.level <= .warning {
+        // Learn "normal" only while truly stable: level 正常 and outside the
+        // post-incident quarantine window (recovery behavior is atypical).
+        if result.justDeescalated, result.previousLevel >= .danger {
+            baselineQuarantineUntil = Date().addingTimeInterval(600)
+        }
+        let quarantined = baselineQuarantineUntil.map { Date() < $0 } ?? false
+        if result.level == .normal, !quarantined {
             baseline.recordNormalSystem(sample: sample)
         }
 
@@ -197,12 +211,31 @@ final class MonitorCenter: ObservableObject {
                 openIncident: true)
         }
 
-        protection.handleAssessment(
-            result,
-            groups: latestGroups,
-            context: ProtectionContext(
-                foregroundGroupKey: foregroundGroupKey,
-                baseline: baseline))
+        // Recovery bookkeeping runs on every tick and needs no group data.
+        protection.handleRecovery(result)
+
+        // Governance (auto-pause / emergency terminate) only acts on FRESH
+        // process data: at Danger/Critical, force a re-scan first and decide
+        // when it arrives — never act on a stale process list.
+        let governanceArmed = settingsStore.settings.autoProtectionEnabled
+            || settingsStore.settings.emergencyKillEnabled
+        if result.level >= .danger && governanceArmed {
+            let scanAge = lastScanAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            if scanAge > 2.0 {
+                pendingGovernance = true
+                processMonitor.scanNow()
+            } else {
+                protection.govern(
+                    result,
+                    groups: latestGroups,
+                    context: ProtectionContext(
+                        foregroundGroupKey: foregroundGroupKey,
+                        baseline: baseline))
+                pendingGovernance = false
+            }
+        } else {
+            pendingGovernance = false
+        }
 
         // Level changes re-curate the notable list between scans.
         if result.level != result.previousLevel {
@@ -236,8 +269,21 @@ final class MonitorCenter: ObservableObject {
         latestGroups = output.groups
         fastestGrowing = output.fastestGrowing
         latestScanStats = output.stats
+        lastScanAt = Date()
 
-        if assessment.level <= .warning {
+        // A governance decision was deferred until fresh data arrived.
+        if pendingGovernance, assessment.level >= .danger {
+            pendingGovernance = false
+            protection.govern(
+                assessment,
+                groups: output.groups,
+                context: ProtectionContext(
+                    foregroundGroupKey: foregroundGroupKey,
+                    baseline: baseline))
+        }
+
+        let quarantined = baselineQuarantineUntil.map { Date() < $0 } ?? false
+        if assessment.level == .normal, !quarantined {
             baseline.recordNormalGroups(output.groups)
         }
 
@@ -299,7 +345,8 @@ final class MonitorCenter: ObservableObject {
                     rssBytes: $0.totalRSS,
                     cpuPercent: $0.cpuFraction * 100,
                     trendBytesPerMin: $0.footprintTrendBytesPerMin,
-                    footprintBytes: $0.totalFootprint)
+                    footprintBytes: $0.totalFootprint,
+                    groupKey: $0.key)
             },
             fastestGrowing: fastestGrowing?.name)
         let encoded = (try? JSONEncoder().encode(snapshot))

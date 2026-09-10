@@ -130,7 +130,8 @@ final class AttributionEngineTests: XCTestCase {
     func testBaselineDeviationOutranksStableHeavies() {
         let baseline = BaselineTracker()
         // Chrome's learned normal is 500 MB; it is now at 2.5 GB.
-        for _ in 0..<70 { baseline.recordNormalGroups([group("Chrome", footprintMB: 500)]) }
+        let chrome = group("Chrome", footprintMB: 500)
+        for _ in 0..<70 { baseline.recordNormalGroups([chrome]) }
         let groups = [
             group("Stable Big App", footprintMB: 4000),
             group("Chrome", footprintMB: 2500),

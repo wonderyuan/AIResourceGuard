@@ -12,6 +12,11 @@ struct AIResourceGuardApp: App {
         let isTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         if !isTest {
             MonitorCenter.shared.start()
+            if Onboarding.shouldShow {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    OnboardingWindowController.shared.show()
+                }
+            }
         }
         // Dev hook: render the popover content in a plain window so it can be
         // inspected without clicking the menu-bar icon.

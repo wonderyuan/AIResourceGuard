@@ -85,28 +85,28 @@ final class ProcessMonitor {
         let wall = max(now.timeIntervalSince(lastScanAt ?? now), 0.5)
         lastScanAt = now
 
-        var records: [ProcessRecord] = []
-        records.reserveCapacity(Int(count))
-        var cpuTimes: [Int32: (user: UInt64, system: UInt64)] = [:]
-        var ppidByPid: [Int32: Int32] = [:]
-        var pathByPid: [Int32: String] = [:]
+        // ── Phase 1: topology (every pid; rusage not required) ─────────────
+        // A process whose rusage cannot be read (root-owned) still appears
+        // here, so its children keep a path to their ancestor app — losing
+        // it would silently break process-tree attribution.
+        struct Node {
+            var ppid: Int32
+            var path: String
+            var name: String
+            var uid: Int32
+            var isStopped: Bool
+            var startSeconds: TimeInterval
+            var isZombie: Bool
+        }
+        var topology: [Int32: Node] = [:]
+        topology.reserveCapacity(Int(count))
         var seenPids = Set<Int32>()
-        var rusageReads = 0
 
         for pid in pids[0..<Int(count)] where pid > 0 && seenPids.insert(pid).inserted {
             var bsdInfo = proc_bsdinfo()
             guard proc_pidinfo(pid, kPROC_PIDTBSDINFO, 0, &bsdInfo,
                                Int32(MemoryLayout<proc_bsdinfo>.stride)) > 0 else { continue }
-            guard bsdInfo.pbi_status != kSZOMB else { continue }
-
-            var rusage = rusage_info_v4()
-            let rusageOK = withUnsafeMutablePointer(to: &rusage) { ptr in
-                ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
-                    proc_pid_rusage(pid, kRUSAGE_INFO_4, $0) == 0
-                }
-            }
-            guard rusageOK else { continue }
-            rusageReads += 1
+            let isZombie = bsdInfo.pbi_status == kSZOMB
 
             var pathBuffer = [CChar](repeating: 0, count: 4096)
             let pathLength = proc_pidpath(pid, &pathBuffer, 4096)
@@ -122,8 +122,33 @@ final class ProcessMonitor {
                 }
             }
 
-            ppidByPid[pid] = Int32(bitPattern: bsdInfo.pbi_ppid)
-            pathByPid[pid] = path
+            topology[pid] = Node(
+                ppid: Int32(bitPattern: bsdInfo.pbi_ppid),
+                path: path,
+                name: name,
+                uid: Int32(bitPattern: bsdInfo.pbi_uid),
+                isStopped: bsdInfo.pbi_status == kSSTOP,
+                startSeconds: TimeInterval(bsdInfo.pbi_start_tvsec),
+                isZombie: isZombie)
+        }
+
+        // ── Phase 2: rusage (per-process accounting; failures counted) ────
+        var records: [ProcessRecord] = []
+        records.reserveCapacity(topology.count)
+        var cpuTimes: [Int32: (user: UInt64, system: UInt64)] = [:]
+        var rusageReads = 0
+
+        for (pid, node) in topology {
+            guard !node.isZombie else { continue }
+
+            var rusage = rusage_info_v4()
+            let rusageOK = withUnsafeMutablePointer(to: &rusage) { ptr in
+                ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                    proc_pid_rusage(pid, kRUSAGE_INFO_4, $0) == 0
+                }
+            }
+            guard rusageOK else { continue } // stays in topology, just unattributed
+            rusageReads += 1
 
             // CPU fraction of one core from rusage time deltas.
             let userTime = rusage.ri_user_time, systemTime = rusage.ri_system_time
@@ -136,7 +161,7 @@ final class ProcessMonitor {
 
             // MCP detection for JS runtimes (cached per pid).
             var isMCP = false
-            if name == "node" || name == "bun" || name == "deno" {
+            if node.name == "node" || node.name == "bun" || node.name == "deno" {
                 if let cached = mcpFlags[pid] {
                     isMCP = cached
                 } else {
@@ -147,24 +172,29 @@ final class ProcessMonitor {
                 }
             }
 
-            let (key, display, _) = ProcessTreeAggregator.classify(name: name, path: path)
+            let (key, display, _) = ProcessTreeAggregator.classify(
+                name: node.name, path: node.path)
             records.append(ProcessRecord(
                 pid: pid,
-                ppid: Int32(bitPattern: bsdInfo.pbi_ppid),
-                name: name,
-                path: path,
+                ppid: node.ppid,
+                name: node.name,
+                path: node.path,
                 rssBytes: rusage.ri_resident_size,
                 footprintBytes: rusage.ri_phys_footprint,
                 cpuFraction: cpuFraction,
-                euid: Int32(bitPattern: bsdInfo.pbi_uid),
-                isStopped: bsdInfo.pbi_status == kSSTOP,
+                euid: node.uid,
+                isStopped: node.isStopped,
                 isMCP: isMCP,
-                startSeconds: TimeInterval(bsdInfo.pbi_start_tvsec),
+                startSeconds: node.startSeconds,
                 groupKey: key,
                 groupDisplayName: display))
         }
 
-        // Phase 2: adopt name-based groups into their ancestor app.
+        // ── Phase 3: attribution (rollup over FULL topology) ───────────────
+        // Name-based groups are adopted by their ancestor app; walking the
+        // tree uses every node, including those without rusage.
+        let ppidByPid = topology.mapValues(\.ppid)
+        let pathByPid = topology.mapValues(\.path)
         var bundlePathByGroup: [String: String] = [:]
         for index in records.indices {
             let record = records[index]
@@ -172,9 +202,10 @@ final class ProcessMonitor {
                 || record.groupKey == "sim" || record.groupKey == "codex" {
                 continue
             }
-            guard let (bundle, bundlePath) = ancestorApp(of: record.pid,
-                                                         ppidByPid: ppidByPid,
-                                                         pathByPid: pathByPid) else { continue }
+            guard let (bundle, bundlePath) = ancestorApp(
+                of: record.pid,
+                ppidByPid: ppidByPid,
+                pathByPid: pathByPid) else { continue }
             let group = ProcessTreeAggregator.appGroup(forBundle: bundle)
             bundlePathByGroup[group.key] = bundlePath
             records[index] = record.reassigned(toGroupKey: group.key,
@@ -186,7 +217,7 @@ final class ProcessMonitor {
         lastCPUTimes = cpuTimes
         mcpFlags = mcpFlags.filter { alive.contains($0.key) }
 
-        // Phase 3: aggregate by group.
+        // Aggregate by group.
         struct Accumulator {
             var rss: UInt64 = 0
             var footprint: UInt64 = 0
@@ -255,7 +286,7 @@ final class ProcessMonitor {
                 isStaleWorkload: isStale,
                 ageSeconds: maxAge))
         }
-        groups.sort { $0.totalRSS > $1.totalRSS }
+        groups.sort { $0.totalFootprint > $1.totalFootprint }
 
         let fastest = groups
             .map { (name: $0.displayName, bytesPerMin: max($0.footprintTrendBytesPerMin, $0.trendBytesPerMin)) }
@@ -264,7 +295,7 @@ final class ProcessMonitor {
 
         onScan?(Output(groups: groups,
                        fastestGrowing: fastest,
-                       stats: ScanStats(totalPids: Int(count), rusageReads: rusageReads)))
+                       stats: ScanStats(totalPids: seenPids.count, rusageReads: rusageReads)))
     }
 
     /// Walks the ppid chain (≤ 12 hops, cycle-safe) looking for an ancestor

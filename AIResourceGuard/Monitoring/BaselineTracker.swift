@@ -68,7 +68,7 @@ final class BaselineTracker {
         for group in groups {
             let mb = Double(group.totalFootprint) / 1_048_576
             if mb > 50 { // ignore noise from short-lived tiny processes
-                groupFootprintMB[group.displayName, default: MetricStats()].add(mb)
+                groupFootprintMB[group.key, default: MetricStats()].add(mb)
             }
         }
     }
@@ -79,10 +79,12 @@ final class BaselineTracker {
             swapUsedMB.add(Double(snapshot.swapUsedBytes) / 1_048_576)
             for entry in snapshot.top {
                 // Prefer footprint; fall back to RSS for rows written before
-                // footprint tracking existed.
+                // footprint tracking existed. Key by stable group key when
+                // present (newer rows), else by display name (legacy rows).
                 let mb = Double(entry.footprintBytes > 0 ? entry.footprintBytes : entry.rssBytes) / 1_048_576
                 if mb > 50 {
-                    groupFootprintMB[entry.name, default: MetricStats()].add(mb)
+                    let key = entry.groupKey.isEmpty ? entry.name : entry.groupKey
+                    groupFootprintMB[key, default: MetricStats()].add(mb)
                 }
             }
         }
@@ -90,15 +92,15 @@ final class BaselineTracker {
 
     // MARK: - Queries
 
-    func groupMeanFootprintMB(displayName: String) -> Double? {
-        guard let stats = groupFootprintMB[displayName], stats.isReady else { return nil }
+    func groupMeanFootprintMB(groupKey: String) -> Double? {
+        guard let stats = groupFootprintMB[groupKey], stats.isReady else { return nil }
         return stats.mean
     }
 
     /// How far a group's current footprint sits above its learned normal,
     /// in MB (nil when the baseline is not ready for this group).
-    func groupFootprintExcessMB(displayName: String, currentMB: Double) -> Double? {
-        guard let stats = groupFootprintMB[displayName], stats.isReady else { return nil }
+    func groupFootprintExcessMB(groupKey: String, currentMB: Double) -> Double? {
+        guard let stats = groupFootprintMB[groupKey], stats.isReady else { return nil }
         let excess = currentMB - stats.mean
         let floor = max(1024.0, 2 * stats.stddev)
         return excess > floor ? excess : nil
@@ -117,7 +119,7 @@ final class BaselineTracker {
 
         var deviations: [(String, Double, Double)] = []
         for group in groups {
-            guard let stats = groupFootprintMB[group.displayName], stats.isReady else { continue }
+            guard let stats = groupFootprintMB[group.key], stats.isReady else { continue }
             let current = Double(group.totalFootprint) / 1_048_576
             let excess = current - stats.mean
             let floor = max(1024.0, 2 * stats.stddev)

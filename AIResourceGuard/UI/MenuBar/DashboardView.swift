@@ -2,39 +2,62 @@ import SwiftUI
 
 /// The 400pt menu-bar popover — the product's primary surface.
 ///
-/// Information architecture (macOS menu-bar utility, not a dashboard):
-///   1. 状态：一句话说清楚现在怎么样、为什么
-///   2. 四个核心指标：当前内存 / Swap / 内存压力 / Swap 趋势
-///   3. 值得关注的应用：风险源优先，其次稳定的大进程；点击展开治理操作
-///   4. 自动保护开关 + 二级入口（事件报告 / 设置 / 退出）
+/// ONE visual core: 系统余量 (how much room is left). Everything else is
+/// typography. The panel has three height tiers tied to the risk level:
 ///
-/// No cards, no charts, no borders: native spacing, typography and a couple
-/// of system hairline dividers. Liquid Glass is reserved for the expanded
-/// app detail (the key interactive area).
+/// - Compact (正常): status + headroom + footer;
+/// - Attention (注意): + what's happening + who's using memory;
+/// - Intervention (压力较高/即将失控): full explanation + actions.
 ///
-/// Sizing is FIXED (Control Center pattern): a MenuBarExtra window that
-/// resizes with its content re-anchors under the icon on every height
-/// change — with per-second data updates and row expansion this reads as
-/// the whole popover "shaking". With a fixed frame the window never
-/// resizes; the app list scrolls internally when an expansion overflows.
+/// Window size is FIXED per tier so it never re-anchors while open; only a
+/// genuine risk-level change can switch tiers. Liquid Glass appears only on
+/// the expanded app panel (the key interactive surface).
 struct DashboardView: View {
     @EnvironmentObject var store: MonitorCenter
 
+    private enum Tier {
+        case compact, attention, intervention
+
+        var height: CGFloat {
+            switch self {
+            case .compact: return 252
+            case .attention: return 470
+            case .intervention: return 560
+            }
+        }
+    }
+
+    private var tier: Tier {
+        switch store.assessment.level {
+        case .normal: return .compact
+        case .warning: return .attention
+        case .danger, .critical: return .intervention
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
             HeaderView()
-            StatusView()
-            MetricsGrid()
-            Divider()
-            NotableAppsSection()
-            Spacer(minLength: 0)
-            Divider()
+
+            HeadroomHero()
+
+            if tier != .compact {
+                StatusView()
+                Divider()
+                NotableAppsSection()
+                Spacer(minLength: 0)
+                Divider()
+            } else {
+                Spacer(minLength: 0)
+            }
+
             FooterView()
         }
-        .padding(16)
-        .frame(width: 400, height: 540)
+        .padding(Design.Space.l)
+        .frame(width: 400, height: tier.height)
         .onAppear { store.popoverOpened() }
         .onDisappear { store.popoverVisible = false }
+        .animation(Design.Motion.standard, value: store.assessment.level)
     }
 }
 
@@ -56,7 +79,7 @@ private struct HeaderView: View {
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundStyle(store.assessment.level.color)
-                if store.assessment.levelAgeSeconds > 15 {
+                if store.assessment.level != .normal, store.assessment.levelAgeSeconds > 15 {
                     Text("已持续 \(durationText(store.assessment.levelAgeSeconds))")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -74,7 +97,106 @@ func durationText(_ seconds: Double) -> String {
     return "\(s / 3600) 小时 \((s % 3600) / 60) 分"
 }
 
-// MARK: - Status sentence + action feedback
+// MARK: - Headroom hero (the single visual core)
+
+private struct HeadroomHero: View {
+    @EnvironmentObject var store: MonitorCenter
+
+    /// Room before the machine has to dig deeper into swap:
+    /// physical − (wired + active + compressed).
+    private var availableBytes: UInt64 {
+        guard let sample = store.system else { return 0 }
+        return sample.usedBytes < sample.physicalTotalBytes
+            ? sample.physicalTotalBytes - sample.usedBytes : 0
+    }
+
+    private var availableGB: Double {
+        Double(availableBytes) / 1_073_741_824
+    }
+
+    private var availablePercent: Double {
+        guard let total = store.system?.physicalTotalBytes, total > 0 else { return 0 }
+        return Double(availableBytes) / Double(total)
+    }
+
+    private var headroomColor: Color {
+        switch availablePercent {
+        case ..<0.05: return .red
+        case ..<0.12: return .orange
+        case ..<0.25: return .yellow
+        default: return .green
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(availableGB >= 10
+                     ? String(format: "%.0f", availableGB)
+                     : String(format: "%.1f", availableGB))
+                    .font(Design.Typo.heroValue)
+                    .monospacedDigit()
+                    .foregroundStyle(headroomColor)
+                Text("GB 系统余量")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(Int(availablePercent * 100))%")
+                    .font(.callout)
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary.opacity(0.5))
+                    Capsule()
+                        .fill(headroomColor.opacity(0.85))
+                        .frame(width: max(proxy.size.width * availablePercent, 3))
+                }
+            }
+            .frame(height: 6)
+
+            if let sample = store.system {
+                swapLine(sample)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func swapLine(_ sample: SystemSample) -> some View {
+        let swapMB = Double(sample.swapUsedBytes) / 1_048_576
+        let rateMB = sample.swapRateBytesPerMin / 1_048_576
+        if swapMB > 512 {
+            HStack(spacing: 5) {
+                Text("Swap 已用 \(fmtBytes(sample.swapUsedBytes))")
+                if rateMB >= 5 {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 8, weight: .bold))
+                    Text("\(String(format: "%.0f", rateMB)) MB/分")
+                } else if rateMB <= -5 {
+                    Image(systemName: "arrow.down")
+                        .font(.system(size: 8, weight: .bold))
+                    Text("\(String(format: "%.0f", -rateMB)) MB/分")
+                } else {
+                    Text("· 平稳")
+                }
+                if store.pressureLevel != .normal {
+                    Text("· 内存压力\(store.pressureLevel.label)")
+                        .foregroundStyle(store.pressureLevel.color)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+        } else if store.pressureLevel != .normal {
+            Text("内存压力\(store.pressureLevel.label)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+// MARK: - Status
 
 private struct StatusView: View {
     @EnvironmentObject var store: MonitorCenter
@@ -83,32 +205,22 @@ private struct StatusView: View {
         let level = store.assessment.level
         VStack(alignment: .leading, spacing: 5) {
             Text(store.assessment.headline)
-                .font(level == .critical ? .system(.body, design: .rounded).weight(.semibold)
-                                          : .callout)
-                .foregroundStyle(level == .normal ? .secondary : .primary)
+                .font(level == .critical
+                      ? .system(.body, design: .rounded).weight(.semibold)
+                      : .callout)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if level >= .warning {
-                HStack(spacing: 4) {
-                    Image(systemName: store.notableContext.source.symbol)
-                        .font(.caption2)
-                    Text(sourceText)
-                        .font(.caption)
-                }
-                .foregroundStyle(.secondary)
-
-                let rest = store.assessment.reasons.prefix(2)
-                if !rest.isEmpty {
-                    Text(rest.joined(separator: " · "))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            HStack(spacing: 4) {
+                Image(systemName: store.notableContext.source.symbol)
+                    .font(.caption2)
+                Text(sourceText)
+                    .font(.caption)
             }
+            .foregroundStyle(.secondary)
 
             if store.notableContext.attributionIncomplete && level >= .danger {
-                Label("系统压力严重，但部分进程无法归因", systemImage: "eye.slash")
+                Label("系统压力严重，部分内存去向不明", systemImage: "eye.slash")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -127,84 +239,9 @@ private struct StatusView: View {
         let source = store.notableContext.source
         guard source != .none else { return "" }
         if case .singleRunaway(let name) = source {
-            return "压力来源：单一失控进程 · \(name)"
+            return "原因：\(name) 增长失控"
         }
-        return "压力来源：\(source.label)"
-    }
-}
-
-// MARK: - Four core metrics
-
-private struct MetricsGrid: View {
-    @EnvironmentObject var store: MonitorCenter
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 4) {
-            if let sample = store.system {
-                metricCell(label: "当前内存",
-                           value: fmtBytes(sample.usedBytes),
-                           sub: "/ \(fmtBytes(sample.physicalTotalBytes))")
-                metricCell(label: "Swap",
-                           value: sample.swapUsedBytes > 0 ? fmtBytes(sample.swapUsedBytes) : "未使用",
-                           color: swapColor(sample))
-                metricCell(label: "内存压力",
-                           value: store.pressureLevel.label,
-                           color: store.pressureLevel.color)
-                metricCell(label: "Swap 趋势",
-                           value: trendText(sample),
-                           color: trendColor(sample))
-            } else {
-                Text("正在读取系统指标…")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity)
-            }
-        }
-    }
-
-    private func swapColor(_ sample: SystemSample) -> Color? {
-        let mb = Double(sample.swapUsedBytes) / 1_048_576
-        if store.assessment.level >= .danger && mb > 8192 { return .red }
-        if store.assessment.level >= .warning && mb > 6144 { return .orange }
-        return nil
-    }
-
-    private func trendText(_ sample: SystemSample) -> String {
-        let mbMin = sample.swapRateBytesPerMin / 1_048_576
-        if mbMin >= 5 { return "↑ \(String(format: "%.0f", mbMin)) MB/分" }
-        if mbMin <= -5 { return "↓ \(String(format: "%.0f", -mbMin)) MB/分" }
-        return "平稳"
-    }
-
-    private func trendColor(_ sample: SystemSample) -> Color {
-        let mbMin = sample.swapRateBytesPerMin / 1_048_576
-        if mbMin >= 200 { return .red }
-        if mbMin >= 50 { return .orange }
-        if mbMin <= -5 { return .green }
-        return .secondary
-    }
-
-    private func metricCell(label: String, value: String,
-                            sub: String? = nil, color: Color? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(value)
-                    .font(.system(.callout, design: .rounded).weight(.medium))
-                    .monospacedDigit()
-                    .foregroundStyle(color ?? .primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                if let sub {
-                    Text(sub)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        return "原因：\(source.label)"
     }
 }
 
@@ -215,7 +252,7 @@ private struct NotableAppsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("值得关注的应用")
+            Text("谁在占用内存")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             if store.notableApps.isEmpty {
@@ -225,12 +262,10 @@ private struct NotableAppsSection: View {
                     .padding(.vertical, 8)
             } else {
                 if store.notableContext.fallbackOnly {
-                    Text("暂未定位到单一主要来源，以下为当前占用最高的应用")
+                    Text("没有单一明显来源，先看占用最高的应用")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
-                // Sized by the fixed popover frame — expansion scrolls
-                // inside instead of resizing (and re-anchoring) the window.
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(store.notableApps) { group in
@@ -244,13 +279,13 @@ private struct NotableAppsSection: View {
     }
 
     private var emptyMessage: String {
-        if store.groups.isEmpty { return "正在扫描…" }
+        if store.groups.isEmpty { return "正在了解正在运行的应用…" }
         if store.assessment.level >= .danger {
             return store.notableContext.attributionIncomplete
-                ? "系统压力严重，但部分进程无法归因"
-                : "暂未定位到单一主要来源"
+                ? "系统压力严重，部分内存去向不明"
+                : "没有单一明显来源"
         }
-        return "当前没有需要关注的应用"
+        return "没有需要处理的应用"
     }
 }
 
@@ -274,7 +309,7 @@ private struct FooterView: View {
                     .font(.caption)
             }
             .buttonStyle(.borderless)
-            .help("查看风险时间线与历史记录")
+            .help("查看每次压力事件的完整过程")
             SettingsLink {
                 Label("设置", systemImage: "gearshape")
                     .font(.caption)

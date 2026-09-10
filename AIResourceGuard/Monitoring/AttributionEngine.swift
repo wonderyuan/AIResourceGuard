@@ -19,12 +19,12 @@ enum PressureSource: Equatable {
 
     var label: String {
         switch self {
-        case .singleRunaway: return "单一失控进程"
-        case .widespread: return "多应用广泛压力"
-        case .swapThrashing: return "Swap 抖动"
-        case .legacyAccumulation: return "遗留任务累积"
-        case .buildBurst: return "构建高峰"
-        case .incompleteAttribution: return "无法完整归因"
+        case .singleRunaway: return "一个应用增长失控"
+        case .widespread: return "多个应用同时在涨"
+        case .swapThrashing: return "内存交换过于频繁"
+        case .legacyAccumulation: return "遗留任务占用内存"
+        case .buildBurst: return "构建任务高峰"
+        case .incompleteAttribution: return "部分内存去向不明"
         case .none: return ""
         }
     }
@@ -80,8 +80,7 @@ enum AttributionEngine {
         var deviators: [(group: ProcessGroupInfo, excessMB: Double)] = []
         for group in groups {
             let current = Double(group.totalFootprint) / 1_048_576
-            if let excess = baseline.groupFootprintExcessMB(
-                displayName: group.displayName, currentMB: current) {
+            if let excess = baseline.groupFootprintExcessMB(groupKey: group.key, currentMB: current) {
                 deviators.append((group, excess))
             }
         }

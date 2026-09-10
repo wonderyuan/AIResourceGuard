@@ -44,11 +44,11 @@ final class RiskEngine {
         case .critical:
             signals.append(Signal(severity: 1.0,
                                   sentence: "系统内存压力持续处于高位",
-                                  detail: "内核内存压力：严重"))
+                                  detail: "系统内存压力：严重"))
         case .warning:
             signals.append(Signal(severity: 0.55,
                                   sentence: "系统内存压力升高",
-                                  detail: "内核内存压力：警告"))
+                                  detail: "系统内存压力：警告"))
         case .normal:
             break
         }
@@ -159,8 +159,8 @@ final class RiskEngine {
                 let ratio = swapDeviationMB / swapThreshold
                 let severity = min(0.75, 0.4 + 0.35 * (ratio - 1))
                 signals.append(Signal(severity: severity,
-                                      sentence: "Swap 显著高于本机常态",
-                                      detail: "Swap 高于常态 \(fmtMB(swapDeviationMB))（常态约 \(fmtMB(input.baseline.swapMeanMB))）"))
+                                      sentence: "Swap 明显高于这台电脑的常态",
+                                      detail: "Swap 高于平时 \(fmtMB(swapDeviationMB))（常态约 \(fmtMB(input.baseline.swapMeanMB))）"))
             }
 
             if input.baseline.pageoutReady {
@@ -168,12 +168,12 @@ final class RiskEngine {
                 let mean = max(input.baseline.pageoutMean, 1)
                 if p > max(15, mean * 12) {
                     signals.append(Signal(severity: 0.7,
-                                          sentence: "换页远超本机常态",
-                                          detail: "换页 \(Int(p)) 页/秒（常态约 \(Int(mean))）"))
+                                          sentence: "内存交换过于频繁",
+                                          detail: "内存交换 \(Int(p)) 页/秒（常态约 \(Int(mean))）"))
                 } else if p > max(10, mean * 6) {
                     signals.append(Signal(severity: 0.4,
-                                          sentence: "换页显著高于本机常态",
-                                          detail: "换页 \(Int(p)) 页/秒（常态约 \(Int(mean))）"))
+                                          sentence: "内存交换明显变频繁",
+                                          detail: "内存交换 \(Int(p)) 页/秒（常态约 \(Int(mean))）"))
                 }
             }
 
@@ -182,20 +182,20 @@ final class RiskEngine {
                 let mean = max(input.baseline.decompressionMean, 1)
                 if d > max(60_000, mean * 8) {
                     signals.append(Signal(severity: 0.6,
-                                          sentence: "内存压缩活动远超本机常态",
-                                          detail: "解压缩 \(Int(d)) 页/秒（常态约 \(Int(mean))）"))
+                                          sentence: "内存压缩过于频繁",
+                                          detail: "内存压缩 \(Int(d)) 页/秒（常态约 \(Int(mean))）"))
                 } else if d > max(30_000, mean * 4) {
                     signals.append(Signal(severity: 0.4,
-                                          sentence: "内存压缩活动高于本机常态",
-                                          detail: "解压缩 \(Int(d)) 页/秒（常态约 \(Int(mean))）"))
+                                          sentence: "内存压缩明显变频繁",
+                                          detail: "内存压缩 \(Int(d)) 页/秒（常态约 \(Int(mean))）"))
                 }
             }
 
             if let group = input.baseline.deviatingGroups.first {
                 let excess = group.currentMB - group.baselineMeanMB
                 signals.append(Signal(severity: 0.45,
-                                      sentence: "\(group.name) 内存显著高于常态",
-                                      detail: "\(group.name) 高于常态 \(fmtMB(excess))（常态约 \(fmtMB(group.baselineMeanMB))）"))
+                                      sentence: "\(group.name) 占用明显高于平时",
+                                      detail: "\(group.name) 高于平时 \(fmtMB(excess))（常态约 \(fmtMB(group.baselineMeanMB))）"))
             }
         }
 

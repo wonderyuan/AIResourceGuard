@@ -26,18 +26,22 @@ struct HistorySnapshot: Identifiable {
         let trendBytesPerMin: Double
         /// Physical footprint (0 in rows written before footprint tracking).
         var footprintBytes: UInt64 = 0
+        /// Stable group key (empty in rows written before stable keys).
+        var groupKey: String = ""
 
         enum CodingKeys: String, CodingKey {
-            case name, rssBytes, cpuPercent, trendBytesPerMin, footprintBytes
+            case name, rssBytes, cpuPercent, trendBytesPerMin, footprintBytes, groupKey
         }
 
         init(name: String, rssBytes: UInt64, cpuPercent: Double,
-             trendBytesPerMin: Double, footprintBytes: UInt64 = 0) {
+             trendBytesPerMin: Double, footprintBytes: UInt64 = 0,
+             groupKey: String = "") {
             self.name = name
             self.rssBytes = rssBytes
             self.cpuPercent = cpuPercent
             self.trendBytesPerMin = trendBytesPerMin
             self.footprintBytes = footprintBytes
+            self.groupKey = groupKey
         }
 
         init(from decoder: Decoder) throws {
@@ -47,6 +51,7 @@ struct HistorySnapshot: Identifiable {
             cpuPercent = try c.decode(Double.self, forKey: .cpuPercent)
             trendBytesPerMin = try c.decode(Double.self, forKey: .trendBytesPerMin)
             footprintBytes = try c.decodeIfPresent(UInt64.self, forKey: .footprintBytes) ?? 0
+            groupKey = try c.decodeIfPresent(String.self, forKey: .groupKey) ?? ""
         }
     }
 

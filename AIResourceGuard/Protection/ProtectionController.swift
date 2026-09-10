@@ -12,18 +12,34 @@ struct ProtectionContext {
 }
 
 /// One task paused by auto-protection, tracked for staged recovery.
+/// PIDs are stored as identities (pid + kernel start time) so delayed
+/// SIGCONT can never hit a recycled pid.
 struct PausedTask {
     let groupKey: String
     let displayName: String
-    let pids: [Int32]
-    let rssBytes: UInt64
+    let identities: [ProcessIdentity]
+    /// Physical footprint at pause time; staged recovery resumes smallest first.
+    let footprintBytes: UInt64
+    let pausedAt: Date
+
+    var ledgerEntry: PausedLedgerEntry {
+        PausedLedgerEntry(groupKey: groupKey, displayName: displayName,
+                          identities: identities, footprintBytes: footprintBytes,
+                          pausedAt: pausedAt)
+    }
 }
 
 /// Executes pause/resume/terminate against process groups, after the policy
-/// gate. Target selection uses RescueScorer (expected release × abnormality ×
-/// impact, frontmost app protected). After Critical, paused tasks resume in
-/// stages via RecoveryPlanner instead of all at once. Every user-visible
-/// outcome is reported through `onFeedback` for the popover.
+/// gate. Two separate paths:
+///
+/// - `handleRecovery` runs on every tick (cheap, no group data needed);
+/// - `govern` runs only on FRESH scan results — MonitorCenter forces a
+///   re-scan at Danger/Critical before any auto-pause/terminate decision,
+///   so actions never target stale process lists.
+///
+/// Delayed signals (staged-resume SIGCONT, last-resort SIGKILL) always
+/// verify ProcessIdentity first. Paused tasks are persisted in
+/// AutoPausedLedger so a guard crash cannot leave tasks frozen forever.
 @MainActor
 final class ProtectionController {
     /// Short human-readable outcome lines for the popover.
@@ -33,7 +49,9 @@ final class ProtectionController {
     private let policyProvider: () -> ProtectedProcessPolicy
     private unowned let history: HistoryStore
 
-    private var pausedTasks: [PausedTask] = []
+    private var pausedTasks: [PausedTask] = [] {
+        didSet { persistLedger() }
+    }
     private var recoveryStableSince: Date?
     private var recoveryNextResumeAt: Date?
     private var recoveryLastResumed: PausedTask?
@@ -43,7 +61,9 @@ final class ProtectionController {
     private var lastAutoPauseAt: Date?
     private var lastEmergencyAt: Date?
     private var criticalSince: Date?
-    private var sigtermSentAt: [Int32: Date] = [:]
+    /// Automatic SIGTERM sent, awaiting the grace period (identity-keyed so
+    /// the last-resort SIGKILL can never hit a recycled pid).
+    private var sigtermLedger: [ProcessIdentity: Date] = [:]
 
     init(settingsProvider: @escaping () -> AppSettings,
          policyProvider: @escaping () -> ProtectedProcessPolicy,
@@ -51,6 +71,25 @@ final class ProtectionController {
         self.settingsProvider = settingsProvider
         self.policyProvider = policyProvider
         self.history = history
+    }
+
+    // MARK: - Startup / shutdown safety
+
+    /// Resumes tasks left frozen by a previous crashed session.
+    func recoverOrphanedTasks() {
+        PausedLedger.recoverOrphanedTasks(history: history)
+    }
+
+    /// Safety net: resume everything before the app terminates gracefully.
+    func resumeAllForExit() {
+        guard !pausedTasks.isEmpty else { return }
+        for task in pausedTasks { resumeIdentities(task.identities) }
+        history.record(HistoryEvent(
+            kind: "action",
+            summary: "内存守护退出，已恢复全部 \(pausedTasks.count) 个已暂停任务",
+            detail: nil))
+        pausedTasks.removeAll()
+        PausedLedger.clear()
     }
 
     // MARK: - Manual actions (Popover buttons)
@@ -71,49 +110,60 @@ final class ProtectionController {
         _ = act(group: group, action: .forceTerminate, isAutomatic: false)
     }
 
-    // MARK: - Automatic flow
+    // MARK: - Automatic governance (FRESH scan data only)
 
-    func handleAssessment(_ assessment: RiskAssessment,
-                          groups: [ProcessGroupInfo],
-                          context: ProtectionContext) {
+    /// Caller contract: `groups` comes from a scan that just completed
+    /// (MonitorCenter enforces this by re-scanning at Danger/Critical).
+    func govern(_ assessment: RiskAssessment,
+                groups: [ProcessGroupInfo],
+                context: ProtectionContext) {
+        guard assessment.level == .critical else { return }
         let settings = settingsProvider()
         let now = Date()
         let cooldown = settings.thresholds.notifyCooldownSeconds
+        if criticalSince == nil { criticalSince = now }
 
-        if assessment.level == .critical {
-            if criticalSince == nil { criticalSince = now }
-
-            // 1. Auto-pause the best rescue target among opted-in apps.
-            if settings.autoProtectionEnabled,
-               lastAutoPauseAt.map({ now.timeIntervalSince($0) >= min(90, cooldown) }) ?? true,
-               let target = bestRescueTarget(in: groups, settings: settings, context: context) {
-                let stopped = act(group: target, action: .pause, isAutomatic: true)
-                if !stopped.isEmpty {
-                    pausedTasks.append(PausedTask(
-                        groupKey: target.key,
-                        displayName: target.displayName,
-                        pids: stopped,
-                        rssBytes: target.totalRSS))
-                    recoveryStableSince = nil
-                    allRecoveredAnnounced = false
-                }
-                lastAutoPauseAt = now
+        // 1. Auto-pause the best rescue target among opted-in apps.
+        if settings.autoProtectionEnabled,
+           lastAutoPauseAt.map({ now.timeIntervalSince($0) >= min(90, cooldown) }) ?? true,
+           let target = bestRescueTarget(in: groups, settings: settings, context: context) {
+            let stoppedIdentities = act(group: target, action: .pause, isAutomatic: true)
+            if !stoppedIdentities.isEmpty {
+                pausedTasks.append(PausedTask(
+                    groupKey: target.key,
+                    displayName: target.displayName,
+                    identities: stoppedIdentities,
+                    footprintBytes: target.totalFootprint,
+                    pausedAt: now))
+                recoveryStableSince = nil
+                allRecoveredAnnounced = false
             }
+            lastAutoPauseAt = now
+        }
 
-            // 2. Emergency terminate after sustained Critical.
-            if settings.emergencyKillEnabled,
-               let since = criticalSince,
-               now.timeIntervalSince(since) >= Double(settings.emergencyKillDelaySeconds),
-               lastEmergencyAt.map({ now.timeIntervalSince($0) >= 300 }) ?? true,
-               let target = bestRescueTarget(in: groups, settings: settings, context: context) {
-                _ = act(group: target, action: .terminate, isAutomatic: true)
-                lastEmergencyAt = now
-            }
-        } else {
+        // 2. Emergency terminate after sustained Critical.
+        if settings.emergencyKillEnabled,
+           let since = criticalSince,
+           now.timeIntervalSince(since) >= Double(settings.emergencyKillDelaySeconds),
+           lastEmergencyAt.map({ now.timeIntervalSince($0) >= 300 }) ?? true,
+           let target = bestRescueTarget(in: groups, settings: settings, context: context) {
+            _ = act(group: target, action: .terminate, isAutomatic: true)
+            lastEmergencyAt = now
+        }
+
+        enforceSigtermGrace(now: now, settings: settings)
+    }
+
+    // MARK: - Recovery (every tick, no group data needed)
+
+    func handleRecovery(_ assessment: RiskAssessment) {
+        let settings = settingsProvider()
+        let now = Date()
+
+        if assessment.level != .critical {
             criticalSince = nil
         }
 
-        // 3. Staged recovery whenever we hold paused tasks (any level).
         if !pausedTasks.isEmpty || recoveryLastResumed != nil {
             runRecovery(assessment: assessment, settings: settings, now: now)
         } else if assessment.level == .normal,
@@ -124,18 +174,6 @@ final class ProtectionController {
         }
 
         enforceSigtermGrace(now: now, settings: settings)
-    }
-
-    /// Safety net: resume everything before the app terminates so no task is
-    /// left SIGSTOPped forever.
-    func resumeAllForExit() {
-        guard !pausedTasks.isEmpty else { return }
-        for task in pausedTasks { resumePids(task.pids) }
-        history.record(HistoryEvent(
-            kind: "action",
-            summary: "内存守护退出，已恢复全部 \(pausedTasks.count) 个已暂停任务",
-            detail: nil))
-        pausedTasks.removeAll()
     }
 
     // MARK: - Staged recovery
@@ -165,19 +203,19 @@ final class ProtectionController {
             onFeedback?("系统压力回落，观察 \(Int(settings.thresholds.recoveryWindowSeconds)) 秒后开始逐步恢复任务")
 
         case .resumeNext:
-            // Smallest task first — least likely to re-stress the machine.
+            // Smallest footprint first — least likely to re-stress the machine.
             guard let index = pausedTasks.indices.min(by: {
-                pausedTasks[$0].rssBytes < pausedTasks[$1].rssBytes
+                pausedTasks[$0].footprintBytes < pausedTasks[$1].footprintBytes
             }) else { return }
             let task = pausedTasks.remove(at: index)
-            resumePids(task.pids)
+            resumeIdentities(task.identities)
             recoveryLastResumed = task
             recoveryLastResumedAt = now
             recoveryNextResumeAt = now.addingTimeInterval(settings.thresholds.recoveryObserveSeconds)
             history.record(HistoryEvent(
                 kind: "action",
                 summary: "分步恢复：已恢复 \(task.displayName)（剩余 \(pausedTasks.count) 个）",
-                detail: "pids: \(task.pids)"))
+                detail: "pids: \(task.identities.map(\.pid))"))
             if pausedTasks.isEmpty {
                 onFeedback?("已恢复任务：\(task.displayName)（全部恢复）")
             } else {
@@ -186,18 +224,19 @@ final class ProtectionController {
 
         case .repauseLast:
             guard let task = recoveryLastResumed else { return }
-            let stillAlive = task.pids.filter { kill($0, 0) == 0 }
-            if !stillAlive.isEmpty {
-                for pid in stillAlive { kill(pid, SIGSTOP) }
+            let stillLive = task.identities.filter { $0.stillCurrent() }
+            if !stillLive.isEmpty {
+                for identity in stillLive { kill(identity.pid, SIGSTOP) }
                 pausedTasks.append(PausedTask(
                     groupKey: task.groupKey,
                     displayName: task.displayName,
-                    pids: stillAlive,
-                    rssBytes: task.rssBytes))
+                    identities: stillLive,
+                    footprintBytes: task.footprintBytes,
+                    pausedAt: now))
                 history.record(HistoryEvent(
                     kind: "action",
                     summary: "恢复 \(task.displayName) 后系统再次承压，已重新暂停",
-                    detail: "pids: \(stillAlive)"))
+                    detail: "pids: \(stillLive.map(\.pid))"))
                 onFeedback?("恢复 \(task.displayName) 后系统再次承压，已重新暂停并延长观察")
             }
             recoveryLastResumed = nil
@@ -231,7 +270,7 @@ final class ProtectionController {
                 let score = RescueScorer.score(
                     group: group,
                     isForeground: group.key == context.foregroundGroupKey,
-                    baselineMeanFootprintMB: context.baseline.groupMeanFootprintMB(displayName: group.displayName))
+                    baselineMeanFootprintMB: context.baseline.groupMeanFootprintMB(groupKey: group.key))
                 return (group, score)
             }
             .max { $0.1 < $1.1 }?
@@ -240,35 +279,49 @@ final class ProtectionController {
 
     // MARK: - Helpers
 
-    private func resumePids(_ pids: [Int32]) {
-        for pid in pids where kill(pid, SIGCONT) != 0 && errno != ESRCH {
-            // best effort
+    private func persistLedger() {
+        PausedLedger.save(pausedTasks.map(\.ledgerEntry))
+    }
+
+    /// SIGCONT only for pids that still belong to the original processes.
+    private func resumeIdentities(_ identities: [ProcessIdentity]) {
+        for identity in identities {
+            guard identity.stillCurrent() else { continue }
+            kill(identity.pid, SIGCONT)
         }
     }
 
-    /// After the grace period, pids that received an automatic SIGTERM and
-    /// are still alive get SIGKILL as the documented last resort.
+    /// After the grace period, processes that received an automatic SIGTERM
+    /// and are still the SAME process instance get SIGKILL as the documented
+    /// last resort. Recycled pids are never killed.
     private func enforceSigtermGrace(now: Date, settings: AppSettings) {
-        guard !sigtermSentAt.isEmpty else { return }
+        guard !sigtermLedger.isEmpty else { return }
         let grace = Double(settings.emergencyKillGraceSeconds)
-        for (pid, sentAt) in sigtermSentAt where now.timeIntervalSince(sentAt) >= grace {
-            sigtermSentAt[pid] = nil
-            if kill(pid, 0) == 0 {
-                if kill(pid, SIGKILL) == 0 {
-                    history.record(HistoryEvent(
-                        kind: "action",
-                        summary: "最后手段：pid \(pid) 未响应 SIGTERM，已发送 SIGKILL",
-                        detail: nil))
-                    log.warning("Last-resort SIGKILL for pid \(pid)")
+        for (identity, sentAt) in sigtermLedger where now.timeIntervalSince(sentAt) >= grace {
+            sigtermLedger[identity] = nil
+            guard identity.stillCurrent() else {
+                if identity.wasRecycled {
+                    log.warning("Skipping last-resort SIGKILL: pid \(identity.pid) was recycled")
                 }
+                continue
+            }
+            if kill(identity.pid, SIGKILL) == 0 {
+                history.record(HistoryEvent(
+                    kind: "action",
+                    summary: "最后手段：\(identity.name)（pid \(identity.pid)）未响应 SIGTERM，已发送 SIGKILL",
+                    detail: nil))
+                log.warning("Last-resort SIGKILL for pid \(identity.pid)")
             }
         }
     }
 
     // MARK: - Core
 
+    /// Sends `signal` to every eligible member of the group, after the
+    /// policy gate. Returns the identities that were actually signaled.
     @discardableResult
-    private func act(group: ProcessGroupInfo, action: ProcessAction, isAutomatic: Bool) -> [Int32] {
+    private func act(group: ProcessGroupInfo, action: ProcessAction, isAutomatic: Bool)
+        -> [ProcessIdentity] {
         let settings = settingsProvider()
         let policy = policyProvider()
         let selfPath = Bundle.main.bundleURL.path
@@ -282,13 +335,18 @@ final class ProtectionController {
         case .forceTerminate: signal = SIGKILL; signalName = "SIGKILL"
         }
 
-        var stopped: [Int32] = []
+        var stopped: [ProcessIdentity] = []
         var denied: [String] = []
-        var failed: [Int32] = []
+        var failed = 0
 
         for proc in group.processes {
             if action == .pause && proc.isStopped { continue }
             if action == .resume && !proc.isStopped { continue }
+            // Delayed manual resume also verifies identity where available.
+            if action == .resume, proc.startSeconds > 0,
+               let identity = ProcessIdentity(record: proc), !identity.stillCurrent() {
+                continue
+            }
 
             let decision = policy.validate(
                 pid: proc.pid,
@@ -306,23 +364,28 @@ final class ProtectionController {
             }
 
             if kill(proc.pid, signal) == 0 {
-                stopped.append(proc.pid)
-                if isAutomatic && action == .terminate {
-                    sigtermSentAt[proc.pid] = Date()
+                if proc.startSeconds > 0, let identity = ProcessIdentity(record: proc) {
+                    stopped.append(identity)
+                    if isAutomatic && action == .terminate {
+                        sigtermLedger[identity] = Date()
+                    }
+                } else {
+                    stopped.append(ProcessIdentity(
+                        pid: proc.pid, startSeconds: 0, name: proc.name))
                 }
             } else {
-                failed.append(proc.pid)
+                failed += 1
             }
         }
 
         let mode = isAutomatic ? "自动" : "手动"
-        if !stopped.isEmpty || !denied.isEmpty || !failed.isEmpty {
+        if !stopped.isEmpty || !denied.isEmpty || failed > 0 {
             let summary = "[\(mode)]\(verb(for: action)) \(group.displayName)："
                 + "\(stopped.count) 个进程已发送 \(signalName)"
                 + (denied.isEmpty ? "" : "，\(denied.count) 个被安全策略拦截")
-                + (failed.isEmpty ? "" : "，\(failed.count) 个失败")
-            let detail = ["sent: \(stopped)", "blocked: \(denied)",
-                          "failed: \(failed)"].joined(separator: "\n")
+                + (failed == 0 ? "" : "，\(failed) 个失败")
+            let detail = ["sent: \(stopped.map(\.pid))", "blocked: \(denied)"]
+                .joined(separator: "\n")
             history.record(HistoryEvent(kind: "action", summary: summary, detail: detail))
             log.info("\(summary, privacy: .public)")
         }
@@ -342,7 +405,7 @@ final class ProtectionController {
             }
         } else if !denied.isEmpty, !isAutomatic {
             onFeedback?("已拦截对 \(group.displayName) 的操作：\(denied[0])")
-        } else if !failed.isEmpty, !isAutomatic {
+        } else if failed > 0, !isAutomatic {
             onFeedback?("操作失败（无权限或进程已退出）")
         }
 
