@@ -155,6 +155,7 @@ final class ProcessMonitor {
                 euid: Int32(bitPattern: bsdInfo.pbi_uid),
                 isStopped: bsdInfo.pbi_status == kSSTOP,
                 isMCP: isMCP,
+                startSeconds: TimeInterval(bsdInfo.pbi_start_tvsec),
                 groupKey: key,
                 groupDisplayName: display))
         }
@@ -213,8 +214,29 @@ final class ProcessMonitor {
 
         var groups: [ProcessGroupInfo] = []
         groups.reserveCapacity(accumulators.count)
+        let nowEpoch = now.timeIntervalSince1970
         for (key, acc) in accumulators {
             let trend = trend(for: key, now: now, rss: acc.rss)
+
+            // Orphan/stale dev workload: no live parent app adopted it
+            // (name-based group), its heavy processes were reparented to
+            // launchd, it is old, idle, and still holding hundreds of MB —
+            // e.g. an MCP server or gradle daemon left behind by an editor
+            // or build that already exited.
+            let unadopted = !(key.hasPrefix("app:") || key == "sim")
+            let heavyProcs = acc.procs.filter { $0.rssBytes > 50 * 1_048_576 }
+            let orphaned = !heavyProcs.isEmpty
+                && heavyProcs.allSatisfy { $0.ppid == 1 }
+            var maxAge: TimeInterval = 0
+            for proc in acc.procs where proc.startSeconds > 0 {
+                maxAge = max(maxAge, nowEpoch - proc.startSeconds)
+            }
+            let isStale = unadopted
+                && acc.rss > 200 * 1_048_576
+                && acc.cpu < 0.5
+                && orphaned
+                && maxAge > 1800
+
             groups.append(ProcessGroupInfo(
                 key: key,
                 displayName: acc.display,
@@ -224,7 +246,9 @@ final class ProcessMonitor {
                 totalFootprint: acc.footprint,
                 cpuFraction: acc.cpu,
                 processes: acc.procs.sorted { $0.rssBytes > $1.rssBytes },
-                trendBytesPerMin: trend))
+                trendBytesPerMin: trend,
+                isStaleWorkload: isStale,
+                ageSeconds: maxAge))
         }
         groups.sort { $0.totalRSS > $1.totalRSS }
 
@@ -309,6 +333,7 @@ private extension ProcessRecord {
             pid: pid, ppid: ppid, name: name, path: path,
             rssBytes: rssBytes, footprintBytes: footprintBytes,
             cpuFraction: cpuFraction, euid: euid, isStopped: isStopped, isMCP: isMCP,
+            startSeconds: startSeconds,
             groupKey: key, groupDisplayName: displayName)
     }
 }

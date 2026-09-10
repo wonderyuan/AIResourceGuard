@@ -30,6 +30,7 @@ struct AIResourceGuardApp: App {
         } label: {
             MenuBarLabel()
                 .environmentObject(store)
+                .environmentObject(settings)
         }
         .menuBarExtraStyle(.window)
 

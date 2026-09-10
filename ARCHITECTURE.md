@@ -56,11 +56,19 @@ App
 │   │                         per-pid CPU deltas, per-group RSS trend rings
 │   └── ProcessTreeAggregator pure grouping rules (app bundles, toolchain,
 │                             node/bun→MCP via KERN_PROCARGS2 argv)
+├── Monitoring
+│   ├── BaselineTracker       machine-relative EWMA baselines (swap/page-out/
+│   │                         decompression/group RSS), bootstrapped from history
 ├── Protection
-│   ├── RiskEngine            pure scoring + hysteresis state machine (unit-tested)
+│   ├── RiskEngine            pure scoring + hysteresis state machine (unit-tested);
+│   │                         fixed thresholds × baseline-deviation signals
 │   ├── ProtectedProcessPolicy pure allow/deny per action (unit-tested)
+│   ├── RescueScorer          expected-release × abnormality × impact ranking,
+│   │                         frontmost app strongly protected (unit-tested)
+│   ├── RecoveryPlanner       staged resume state machine (unit-tested)
+│   ├── IncidentSummarizer    rule-based post-mortem narrative (unit-tested)
 │   └── ProtectionController  SIGSTOP/SIGCONT/SIGTERM (+SIGKILL last resort),
-│                             auto-pause at Critical, emergency terminate flow
+│                             rescue-scored targets, staged recovery, exit safety
 ├── Models                    SystemSample / ProcessRecord / ProcessGroupInfo /
 │                             RiskInput / RiskAssessment / ThresholdConfig / AppSettings
 ├── Persistence
@@ -151,3 +159,6 @@ fastest-growing every 30–120s by level), `action`. Pruned to 24h / 1000 rows.
   stable path (e.g. /Applications) work best.
 - Root-owned dev processes cannot be paused/killed without root; they are
   reported as protected instead.
+- The baseline needs ≥ 60 normal-state samples before its deviation signals
+  activate (bootstrapped from history, so usually ready within minutes of
+  first launch on a machine with prior history).

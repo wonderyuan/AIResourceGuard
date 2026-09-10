@@ -29,6 +29,11 @@ private struct GeneralSettingsTab: View {
     var body: some View {
         Form {
             Section {
+                Picker("菜单栏显示", selection: $settings.settings.menuBarDisplayMode) {
+                    ForEach(MenuBarDisplayMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
                 Toggle("登录时启动", isOn: $loginItemEnabled)
                     .onChange(of: loginItemEnabled) { enabled in
                         switch LaunchAtLogin.setEnabled(enabled) {
@@ -46,9 +51,9 @@ private struct GeneralSettingsTab: View {
                 }
                 Toggle("风险通知", isOn: $settings.settings.notificationsEnabled)
             } header: {
-                Text("启动")
+                Text("启动与菜单栏")
             } footer: {
-                Text("登录启动使用 SMAppService；请将应用放在稳定路径（如 /Applications）。")
+                Text("正常状态下菜单栏尽量克制；无论哪种模式，异常都会通过图标颜色变化提醒。登录启动使用 SMAppService，请将应用放在稳定路径（如 /Applications）。")
                     .font(.caption2)
             }
 
@@ -247,8 +252,15 @@ private struct ThresholdsTab: View {
                         value: $settings.settings.thresholds.deescalateSeconds, in: 5...180, step: 5)
                 Stepper("通知冷却 \(Int(settings.settings.thresholds.notifyCooldownSeconds)) 秒",
                         value: $settings.settings.thresholds.notifyCooldownSeconds, in: 30...600, step: 30)
+                Stepper("恢复等待窗口 \(Int(settings.settings.thresholds.recoveryWindowSeconds)) 秒",
+                        value: $settings.settings.thresholds.recoveryWindowSeconds, in: 15...600, step: 15)
+                Stepper("逐个恢复间隔 \(Int(settings.settings.thresholds.recoveryObserveSeconds)) 秒",
+                        value: $settings.settings.thresholds.recoveryObserveSeconds, in: 15...300, step: 15)
             } header: {
                 Text("持续时间与滞回")
+            } footer: {
+                Text("自动保护暂停的任务不会一次全部恢复：系统稳定满「恢复等待窗口」后，每次只恢复一个（最小的先），并观察「逐个恢复间隔」后再恢复下一个；若系统再次承压则重新暂停该任务。")
+                    .font(.caption2)
             }
 
             Section {

@@ -5,6 +5,8 @@ import SwiftUI
 struct IncidentReportView: View {
     @EnvironmentObject var store: MonitorCenter
     @State private var snapshots: [HistorySnapshot] = []
+    @State private var events: [HistoryEvent] = []
+    @State private var summary: [String] = []
     @State private var rangeHours = 6
 
     var body: some View {
@@ -49,6 +51,23 @@ struct IncidentReportView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
+                        if !summary.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label("事故摘要", systemImage: "text.alignleft")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                ForEach(summary.indices, id: \.self) { index in
+                                    Text(summary[index])
+                                        .font(.callout)
+                                        .foregroundStyle(
+                                            index == summary.count - 1 ? .primary : .secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .glassSurface()
+                        }
                         summaryRow
                         RiskTimeline(snapshots: snapshots)
                         offendersSection
@@ -70,8 +89,22 @@ struct IncidentReportView: View {
 
     private func reload() {
         HistoryStore.shared.fetchSnapshots(hours: TimeInterval(rangeHours)) { snaps in
-            snapshots = snaps
+            self.snapshots = snaps
+            recomputeSummary()
         }
+        HistoryStore.shared.recentEvents(limit: 500) { events in
+            self.events = events
+            recomputeSummary()
+        }
+    }
+
+    private func recomputeSummary() {
+        guard let windowStart = snapshots.first?.timestamp else {
+            summary = []
+            return
+        }
+        let windowEvents = events.filter { $0.timestamp >= windowStart }
+        summary = IncidentSummarizer.summarize(snapshots: snapshots, events: windowEvents)
     }
 
     private var peakRisk: RiskLevel {

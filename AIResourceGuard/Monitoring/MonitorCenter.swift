@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 import os
 
 private let log = Logger(subsystem: "local.dev.AIResourceGuard", category: "center")
@@ -38,6 +39,11 @@ final class MonitorCenter: ObservableObject {
     private let pressureMonitor = MemoryPressureMonitor()
     private let systemMonitor = SystemMetricsMonitor()
     private let processMonitor = ProcessMonitor()
+    /// Machine-relative learned normal, bootstrapped from history.
+    private let baseline = BaselineTracker()
+    /// Group key of the app the user is currently interacting with.
+    private var foregroundGroupKey: String?
+    private var terminateObserver: NSObjectProtocol?
 
     private var started = false
     private var latestGroups: [ProcessGroupInfo] = []
@@ -85,6 +91,17 @@ final class MonitorCenter: ObservableObject {
         pressureMonitor.start()
         systemMonitor.start(interval: 5)
         processMonitor.start(interval: 20)
+
+        // Seed the baseline from persisted history so it is useful at once.
+        baseline.bootstrap(from: history.snapshotsSync(hours: 24))
+
+        // Safety net: never leave auto-paused tasks SIGSTOPped behind us.
+        terminateObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            self?.protection.resumeAllForExit()
+        }
+
         if notifications { Notifier.shared.requestIfNeeded() }
         checkPreviousSessionEnd()
     }
@@ -120,8 +137,9 @@ final class MonitorCenter: ObservableObject {
 
     private func handleSystem(_ sample: SystemSample) {
         system = sample
+        updateForeground()
 
-        let input = RiskInput(
+        var input = RiskInput(
             timestamp: sample.timestamp,
             pressure: pressureLevel,
             memoryUsedFraction: sample.usedFraction,
@@ -131,9 +149,16 @@ final class MonitorCenter: ObservableObject {
             decompressionRate: sample.decompressionRate,
             topGrowthBytesPerMin: fastestGrowing?.bytesPerMin ?? 0,
             topGrowthGroup: fastestGrowing?.name)
+        input.baseline = baseline.context(sample: sample, groups: latestGroups)
 
         let result = riskEngine.evaluate(input)
         assessment = result
+
+        // Learn "normal" only while things are (close to) normal, so real
+        // incidents never pollute the baseline.
+        if result.level <= .warning {
+            baseline.recordNormalSystem(sample: sample)
+        }
 
         if result.justEscalated || result.justDeescalated {
             history.record(HistoryEvent(
@@ -163,7 +188,12 @@ final class MonitorCenter: ObservableObject {
                 openIncident: true)
         }
 
-        protection.handleAssessment(result, groups: latestGroups)
+        protection.handleAssessment(
+            result,
+            groups: latestGroups,
+            context: ProtectionContext(
+                foregroundGroupKey: foregroundGroupKey,
+                baseline: baseline))
 
         // Adaptive cadence: metrics 5/2/1s, process scan 20/10/5s.
         let metricsInterval: TimeInterval
@@ -191,6 +221,11 @@ final class MonitorCenter: ObservableObject {
     private func handleProcess(_ output: ProcessMonitor.Output) {
         latestGroups = output.groups
         fastestGrowing = output.fastestGrowing
+
+        if assessment.level <= .warning {
+            baseline.recordNormalGroups(output.groups)
+        }
+
         let notable = computeNotable(output.groups)
 
         // Skip expensive UI publishes while the popover is closed.
@@ -201,23 +236,37 @@ final class MonitorCenter: ObservableObject {
         }
     }
 
+    /// Tracks which app the user is actively using — the rescue scorer
+    /// protects it from auto-pause.
+    private func updateForeground() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.bundleIdentifier != Bundle.main.bundleIdentifier,
+              let path = app.bundleURL?.path,
+              let bundle = ProcessTreeAggregator.appBundleName(path: path) else {
+            return
+        }
+        foregroundGroupKey = ProcessTreeAggregator.appGroup(forBundle: bundle).key
+    }
+
     /// "值得关注的应用" selection — explicitly NOT top-by-RSS:
     /// 1. groups actively growing (> 50 MB/min = 风险源), worst growth first;
-    /// 2. then stable heavy residents (> 300 MB), largest first.
+    /// 2. suspected orphaned/stale workloads (cleanup targets);
+    /// 3. stable heavy residents (> 300 MB), largest first.
     private func computeNotable(_ groups: [ProcessGroupInfo]) -> [ProcessGroupInfo] {
         let riskThreshold = 50.0 * 1_048_576
         let sizeFloor = 300.0 * 1_048_576
         let candidates = groups.filter {
-            Double($0.totalRSS) > sizeFloor || $0.trendBytesPerMin > riskThreshold
+            $0.isStaleWorkload
+                || Double($0.totalRSS) > sizeFloor
+                || $0.trendBytesPerMin > riskThreshold
+        }
+        func rank(_ group: ProcessGroupInfo) -> (Int, Double, Double) {
+            if group.isRiskSource { return (0, group.trendBytesPerMin, Double(group.totalRSS)) }
+            if group.isStaleWorkload { return (1, Double(group.totalRSS), 0) }
+            return (2, 0, Double(group.totalRSS))
         }
         return candidates
-            .sorted { lhs, rhs in
-                let lhsRisk = lhs.trendBytesPerMin > riskThreshold
-                let rhsRisk = rhs.trendBytesPerMin > riskThreshold
-                if lhsRisk != rhsRisk { return lhsRisk }
-                if lhsRisk { return lhs.trendBytesPerMin > rhs.trendBytesPerMin }
-                return lhs.totalRSS > rhs.totalRSS
-            }
+            .sorted { rank($0) > rank($1) }
             .prefix(5)
             .map { $0 }
     }
@@ -282,8 +331,12 @@ final class MonitorCenter: ObservableObject {
         let top = latestGroups.prefix(3)
             .map { "\($0.displayName)=\(fmtBytes($0.totalRSS))" }
             .joined(separator: ", ")
-            return String(
-            format: "%@ pressure=%@ mem=%.1f/%.1fGB swap=%.2fGB rate=%@ pageout=%.0f/s decomp=%.0f/s cpu=%.1f%% risk=%.2f %@ top=[%@]",
+        let stale = latestGroups
+            .filter(\.isStaleWorkload)
+            .map { "\($0.displayName)(\(fmtBytes($0.totalRSS)),age \(Int($0.ageSeconds / 60))m)" }
+            .joined(separator: ", ")
+        return String(
+            format: "%@ pressure=%@ mem=%.1f/%.1fGB swap=%.2fGB rate=%@ pageout=%.0f/s decomp=%.0f/s cpu=%.1f%% risk=%.2f %@ base=%@ top=[%@] stale=[%@]",
             formatter.string(from: sample.timestamp),
             sample.pressure.label,
             Double(sample.usedBytes) / 1_073_741_824,
@@ -295,6 +348,10 @@ final class MonitorCenter: ObservableObject {
             sample.cpuUsage * 100,
             assessment.score,
             assessment.level.label,
-            top)
+            baseline.swapUsedMB.isReady
+                ? String(format: "swap%.0fMB±%.0f", baseline.swapUsedMB.mean, baseline.swapUsedMB.stddev)
+                : "learning(\(baseline.swapUsedMB.count))",
+            top,
+            stale)
     }
 }

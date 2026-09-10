@@ -35,13 +35,21 @@ struct ProcessGroupRow: View {
                                     .background(.orange.opacity(0.18), in: Capsule())
                                     .foregroundStyle(.orange)
                             }
+                            if group.isStaleWorkload {
+                                Text("疑似残留")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(.teal.opacity(0.15), in: Capsule())
+                                    .foregroundStyle(.teal)
+                            }
                             if isProtected {
                                 Image(systemName: "lock.fill")
                                     .font(.system(size: 8))
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        Text("\(group.processes.count) 个进程 · CPU \(cpuText)")
+                        Text(subtitle)
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -73,6 +81,14 @@ struct ProcessGroupRow: View {
     private var cpuText: String {
         let pct = group.cpuFraction * 100
         return pct >= 100 ? String(format: "%.0f%%", pct) : String(format: "%.1f%%", pct)
+    }
+
+    private var subtitle: String {
+        var parts = ["\(group.processes.count) 个进程 · CPU \(cpuText)"]
+        if group.isStaleWorkload {
+            parts.append("已闲置 \(Int(group.ageSeconds / 60)) 分钟")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var trendText: String {
@@ -146,7 +162,12 @@ struct ProcessGroupRow: View {
             }
 
             HStack(spacing: 8) {
-                if group.anyStopped {
+                if group.isStaleWorkload {
+                    Button("清理残留任务") { confirmTerminate = true }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .tint(.teal)
+                } else if group.anyStopped {
                     Button("恢复任务") { store.protection.resume(group) }
                         .glassActionButton()
                         .controlSize(.small)

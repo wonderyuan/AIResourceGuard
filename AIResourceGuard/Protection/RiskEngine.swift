@@ -147,6 +147,58 @@ final class RiskEngine {
                                   detail: "\(group) 增长 \(fmtRate(input.topGrowthBytesPerMin))"))
         }
 
+        // Machine-relative layer: deviation from this machine's learned
+        // normal. Absolute thresholds above are deliberately conservative
+        // because machines differ (a 16 GB mini idles at swap levels that
+        // would alarm a 64 GB machine); the baseline catches what "abnormal
+        // for THIS machine" actually means.
+        if input.baseline.ready {
+            let swapDeviationMB = swapMB - input.baseline.swapMeanMB
+            let swapThreshold = max(2048, 2 * input.baseline.swapStdMB)
+            if swapDeviationMB > swapThreshold {
+                let ratio = swapDeviationMB / swapThreshold
+                let severity = min(0.75, 0.4 + 0.35 * (ratio - 1))
+                signals.append(Signal(severity: severity,
+                                      sentence: "Swap 显著高于本机常态",
+                                      detail: "Swap 高于常态 \(fmtMB(swapDeviationMB))（常态约 \(fmtMB(input.baseline.swapMeanMB))）"))
+            }
+
+            if input.baseline.pageoutReady {
+                let p = input.pageoutRate
+                let mean = max(input.baseline.pageoutMean, 1)
+                if p > max(15, mean * 12) {
+                    signals.append(Signal(severity: 0.7,
+                                          sentence: "换页远超本机常态",
+                                          detail: "换页 \(Int(p)) 页/秒（常态约 \(Int(mean))）"))
+                } else if p > max(10, mean * 6) {
+                    signals.append(Signal(severity: 0.4,
+                                          sentence: "换页显著高于本机常态",
+                                          detail: "换页 \(Int(p)) 页/秒（常态约 \(Int(mean))）"))
+                }
+            }
+
+            if input.baseline.decompressionReady {
+                let d = input.decompressionRate
+                let mean = max(input.baseline.decompressionMean, 1)
+                if d > max(60_000, mean * 8) {
+                    signals.append(Signal(severity: 0.6,
+                                          sentence: "内存压缩活动远超本机常态",
+                                          detail: "解压缩 \(Int(d)) 页/秒（常态约 \(Int(mean))）"))
+                } else if d > max(30_000, mean * 4) {
+                    signals.append(Signal(severity: 0.4,
+                                          sentence: "内存压缩活动高于本机常态",
+                                          detail: "解压缩 \(Int(d)) 页/秒（常态约 \(Int(mean))）"))
+                }
+            }
+
+            if let group = input.baseline.deviatingGroups.first {
+                let excess = group.currentMB - group.baselineMeanMB
+                signals.append(Signal(severity: 0.45,
+                                      sentence: "\(group.name) 内存显著高于常态",
+                                      detail: "\(group.name) 高于常态 \(fmtMB(excess))（常态约 \(fmtMB(group.baselineMeanMB))）"))
+            }
+        }
+
         let score = Self.combine(signals)
         let sorted = signals.sorted { $0.severity > $1.severity }
         let reasons = sorted.prefix(4).map(\.detail)

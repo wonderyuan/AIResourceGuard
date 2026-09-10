@@ -16,7 +16,9 @@
 - 自动保护动作直接反馈在 Popover（「已暂停 ZCode 任务」「系统压力已恢复」）
 - 进程按任务组归属：ZCode → node/MCP/shell，IntelliJ → java/Gradle，
   Xcode → xcodebuild/swiftc/sourcekitd，浏览器 Helper 全部归入主应用
-- 全部界面为简体中文；事件报告（时间线/最重进程/自动保护记录）降级为二级黑匣子
+- 全部界面为简体中文；事件报告（时间线/最重进程/自动保护记录）降级为二级黑匣子，
+  顶部自动生成**规则式事故摘要**：何时开始、Swap 如何变化、哪个任务异常增长、
+  执行了什么保护动作、何时恢复、最可能原因（无需 LLM）
 
 ## 构建与运行
 
@@ -51,11 +53,20 @@ Risk Engine 综合以下信号打分（0–1），分为 正常 / 注意 / 压�
 升级需要同级别信号**持续** 12/10/6 秒；降级需要低于阈值 0.12 且持续 30 秒（hysteresis）；
 同一级别通知有 120 秒冷却。所有阈值可在 Settings ▸ Thresholds 调整。
 
+- **本机动态基线**：学习正常状态下 Swap / 换页 / 解压缩 / 进程组 RSS 的常态
+  （EWMA，仅从正常时段学习，启动时从 24h 历史自举），风险判断 = 固定安全阈值
+  + 相对基线偏离，不同内存容量的机器不再共用一套绝对阈值；
+- **开发残留检测**：识别父任务已结束（被重挂到 launchd）、闲置 30 分钟以上但
+  仍占几百 MB 的 node/MCP/gradle/xcodebuild 等孤儿任务，标记"疑似残留"并支持
+  一键清理；
 - **Warning**：菜单栏图标变化 + 原生通知（含 Top 3 进程）。
 - **Danger**：再次通知，并标注内存增长最快的进程；Popover 内可对任意非保护进程组
   一键 Pause（SIGSTOP）/ Resume（SIGCONT）/ Terminate（SIGTERM）。
-- **Critical + Auto Protection**：自动 Pause 用户在 Managed Apps 里明确勾选的应用；
-  回到 Normal 后自动 Resume。
+- **Critical + Auto Protection**：按 Rescue Score 挑选目标（预计释放内存 × 异常增长
+  × 后台权重；前台应用强保护、孤儿残留任务优先），自动暂停最优对象；
+- **分步恢复**：回到正常后不一次性恢复——稳定满恢复等待窗口（默认 60s）后每次
+  恢复一个任务（最小优先），观察期（默认 45s）内若再次承压则重新暂停该任务；
+  内存守护退出时自动恢复全部已暂停任务（不会留下永久 SIGSTOP 的进程）。
 - **Critical + Emergency Terminate（默认关闭）**：持续 Critical 达到设定时长后，
   对明确勾选的应用 SIGTERM，宽限期后仍存活才用 SIGKILL 兜底（仅此一种自动 SIGKILL 场景）。
 

@@ -98,6 +98,9 @@ struct ProcessRecord {
     let isStopped: Bool
     /// True for JS runtimes whose argv mentions an MCP server.
     let isMCP: Bool
+    /// Process start time (epoch seconds, 0 when unavailable) — used for
+    /// orphan/stale detection.
+    let startSeconds: TimeInterval
     let groupKey: String
     let groupDisplayName: String
 }
@@ -125,6 +128,12 @@ struct ProcessGroupInfo: Identifiable {
     let processes: [ProcessRecord]
     /// Bytes per minute across a ~5-minute window (0 when window is too short).
     let trendBytesPerMin: Double
+    /// Suspected orphaned/stale dev workload: no live parent app, old,
+    /// idle-but-heavy (node/MCP/java/xcodebuild… left behind by a finished
+    /// task). Prime cleanup target.
+    let isStaleWorkload: Bool
+    /// Age of the oldest member process, seconds (0 when unknown).
+    let ageSeconds: TimeInterval
 
     var id: String { key }
 
@@ -155,6 +164,9 @@ struct RiskInput {
     var decompressionRate: Double = 0
     var topGrowthBytesPerMin: Double = 0
     var topGrowthGroup: String?
+    /// Machine-relative baseline (learned normal); deviation signals are
+    /// generated from it in addition to the fixed safety thresholds.
+    var baseline = BaselineContext()
 }
 
 struct RiskAssessment {
