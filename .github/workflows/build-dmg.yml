@@ -1,0 +1,65 @@
+name: Build DMG
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build-dmg:
+    name: Build and package DMG
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The app uses macOS 26 Liquid Glass APIs (availability-gated at
+      # runtime), so the build needs a recent SDK. Pick the newest Xcode
+      # installed on the runner.
+      - name: Select newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -td /Applications/Xcode*.app | head -1)"
+          xcodebuild -version
+          xcodebuild -showsdks | grep macOS
+
+      - name: Build (Release)
+        run: |
+          xcodebuild -project AIResourceGuard.xcodeproj \
+            -scheme "AI Resource Guard" \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build \
+            clean build | tail -20
+
+      - name: Create DMG
+        run: |
+          APP="build/Build/Products/Release/AI Resource Guard.app"
+          VERSION=$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString)
+          DMG="AI-Resource-Guard-${VERSION}-${GITHUB_SHA::7}.dmg"
+          echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
+          hdiutil create \
+            -volname "AI Resource Guard" \
+            -srcfolder "$APP" \
+            -ov -format UDZO \
+            "$DMG"
+          ls -lh "$DMG"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Resource-Guard-DMG
+          path: ${{ env.DMG_PATH }}
+          if-no-files-found: error
+
+      # Tag pushes (v*) attach the DMG to a GitHub Release.
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_PATH }}
+          body: |
+            下载 DMG 后拖入「应用程序」即可使用（Apple Silicon）。
+
+            首次打开若提示无法验证开发者：右键点应用 →「打开」，或
+            `xattr -d com.apple.quarantine "/Applications/AI Resource Guard.app"`。
