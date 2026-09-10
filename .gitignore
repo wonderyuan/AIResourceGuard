@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Xcode build artifacts
+build/
+DerivedData/
+*.profraw
+
+# Built app bundles
+*.app
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+
+# Swift Package Manager
+.build/
+Package.resolved
