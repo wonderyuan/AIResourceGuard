@@ -1,130 +1,93 @@
-# AI Resource Guard · 内存守护
+# 内存守护 · AI Resource Guard
 
-原生 macOS 菜单栏工具（Menu Bar Utility，macOS 27 / Liquid Glass 设计语言）：
-日常没有主窗口，只常驻状态栏；点击图标展开 Popover 即完成全部监控与治理。
+一款 macOS 菜单栏工具，专为在 Mac 上跑 AI 开发任务的人准备。
 
-在跑 ZCode / Cursor / IntelliJ / Xcode / 模拟器 / node / MCP 等开发任务时，提前发现
-内存恶化趋势（内存压力 / Swap 增速 / 压缩抖动 / 进程树增长），在机器卡死之前给出
-一句人类可读的警告（如「Swap 已达到 12.7 GB，并仍在快速增长」），并允许安全地
-暂停 / 恢复 / 终止失控任务。
+如果你也遇到过这样的场景——Cursor、Xcode、模拟器、MCP 服务、构建任务同时开着，内存不知不觉被吃光，Swap 悄悄涨满，风扇狂转之后整个系统卡死，重启之后却查不到是谁干的——它会替你盯着，并在一切太迟之前出手。
 
-产品形态（v2 重构）：
-- 状态栏图标实时体现状态：正常 / 注意 / 压力较高 / 即将失控（异常时附带彩色文字）
-- Popover 顶部一句话原因；四个核心指标（当前内存 / Swap / 内存压力 / Swap 趋势）
-- 「值得关注的应用」：风险源（正在增长的进程组）优先于稳定的大进程，绝不按
-  "RSS 最大 = 风险最大"排序；点击展开可在 Liquid Glass 面板中直接治理
-- 自动保护动作直接反馈在 Popover（「已暂停 ZCode 任务」「系统压力已恢复」）
-- 进程按任务组归属：ZCode → node/MCP/shell，IntelliJ → java/Gradle，
-  Xcode → xcodebuild/swiftc/sourcekitd，浏览器 Helper 全部归入主应用
-- 全部界面为简体中文；事件报告（时间线/最重进程/自动保护记录）降级为二级黑匣子，
-  顶部自动生成**规则式事故摘要**：何时开始、Swap 如何变化、哪个任务异常增长、
-  执行了什么保护动作、何时恢复、最可能原因（无需 LLM）
+## 它能为你做什么
 
-## 构建与运行
+**随时看一眼就知道系统安不安全**
+
+菜单栏常驻，状态一目了然：正常、注意、压力较高、即将失控。异常时图标变色并附上文字提醒，不需要点开任何窗口。
+
+**用一句话告诉你发生了什么，而不是一堆指标**
+
+点开面板，最先看到的永远是一句人话：
+
+- "系统正常，无需处理"
+- "Swap 正在快速增长"
+- "Swap 已达到 12.7 GB，并仍在快速增长"
+
+下面只有四个真正重要的数字：当前内存、Swap、内存压力、Swap 趋势。没有仪表盘，没有花哨图表。
+
+**告诉你谁值得怀疑，而不是谁的内存最大**
+
+"值得关注的应用"列表里，正在快速增长的应用会标上"风险源"排在最前面——一个正在膨胀的 800 MB 进程，比一个安安静静的 3 GB 浏览器危险得多。每个应用下面能看到它名下的全部进程（含各自的内存、CPU、增长趋势）。
+
+**谁的孩子谁抱走**
+
+node、MCP 服务、Gradle、xcodebuild 这些后台进程不再各自为政，而是归属到启动它们的父应用名下：ZCode 名下是它的 node 和 MCP，IntelliJ 名下是 java 和 Gradle，Xcode 名下是整个构建工具链。你在哪个应用里干了什么，一目了然。
+
+**找出被遗忘的残留任务**
+
+编辑器关了，它启动的 MCP 服务还占着几百 MB 不走；构建早结束了，守护进程还在后台趴着吃内存。这些"父任务已结束、闲置半小时以上"的孤儿任务会被标为"疑似残留"，一键清理。
+
+**危险来临前的主动保护**
+
+在设置里为你信任的应用开启"自动保护"后，系统濒临失控时它会自动暂停最值得暂停的那个后台任务——优先选择释放内存多、增长异常、没人正在使用的目标，你正在使用的前台应用会受到最强保护，永远不会被误伤。
+
+**温和地恢复**
+
+自动暂停的任务不会在压力稍有缓解时一拥而上地恢复：系统稳定一段时间后，每次只恢复一个，确认无恙再恢复下一个；一旦再次承压，刚恢复的任务会被重新暂停。所有动作都有记录，面板上会直接告诉你"已暂停 ZCode 任务""系统压力已恢复"。
+
+**出事之后，给你一份完整的事故报告**
+
+无论机器是真的卡死过还是只是虚惊一场，"事件报告"里都有一份自动生成的事故摘要，像有人替你值了个班：
+
+> 14:45 起风险升至「即将失控」，15:10 达到峰值（Swap 14.3 GB），15:23 恢复正常，持续约 38 分钟。
+> Swap 从 13 GB 升至 14.3 GB（+1.29 GB），峰值增速 1288 MB/分钟。
+> 期间 ZCode 内存从 205 MB 增至 1.79 GB（+1.59 GB），为增长最异常的任务。
+> 最可能原因：ZCode 快速增长把系统推入 Swap。
+
+配上内存与 Swap 的时间线、当时最重的应用、以及每一次保护动作的记录。
+
+**懂你的机器**
+
+它会学习你这台机器"正常"的样子——平时的 Swap 水位、换页频率、各应用的内存占用量——并以此判断什么才算"异常"。8 GB 的 Swap 在别人机器上是事故，在你的机器上可能只是日常；反过来，一个从不超 1 GB 的应用涨到 2.5 GB，才是真正需要警惕的信号。
+
+## 你的系统是安全的
+
+这些原则不会被任何设置绕过：
+
+- 系统关键进程（内核、登录、窗口服务、访达、程序坞等）以及所有 root 进程，永远不会被暂停或终止；
+- 默认不自动处理任何应用——每一个自动保护对象都需要你亲手勾选；
+- 终止任务永远先温和地请求退出，强制退出需要你确认，自动强制退出只在你明确开启"紧急终止"后才可能发生，且仅作为最后手段；
+- 所有自动操作都有记录可查，应用退出时会恢复它暂停过的一切，不会留下一堆冻住的进程。
+
+## 安装与使用
 
 ```bash
-cd AIResourceGuard
 xcodebuild -project AIResourceGuard.xcodeproj -scheme "AI Resource Guard" \
   -configuration Debug -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath build/DerivedData build
+  -derivedDataPath build build
 open "build/DerivedData/Build/Products/Debug/AI Resource Guard.app"
 ```
 
-或直接用 Xcode 打开 `AIResourceGuard.xcodeproj`，Cmd+R 运行。
-建议把 `AI Resource Guard.app` 拷贝到 /Applications 长期使用（登录启动需要稳定路径）。
+也可以直接用 Xcode 打开工程运行。启动后常驻菜单栏，没有 Dock 图标、没有主窗口。长期使用建议把应用拷贝到"应用程序"文件夹（登录启动需要稳定路径）。
 
-- 启动后常驻菜单栏，无 Dock 图标、无主窗口（LSUIElement）。
-- 点击菜单栏盾牌图标打开 Popover（400pt 宽）。
-- 无 App Sandbox、无 Hardened Runtime、ad-hoc 签名：读取其他进程的 rusage
-  与发送信号需要这些能力，这是有意的选择。
+首次启动会请求通知权限；如果错过了，可以到 系统设置 ▸ 通知 里找到"AI Resource Guard"打开。未授权只影响通知，其余功能完整。
 
-## 状态与治理
+## 它有多轻
 
-Risk Engine 综合以下信号打分（0–1），分为 正常 / 注意 / 压力较高 / 即将失控：
+空闲时 CPU 占用接近 0%，内存几十 MB。内存压力事件由系统内核主动通知而非轮询；系统指标按风险等级自适应节奏（正常时 5 秒一次，紧张时加快），面板没打开时不会做无意义的界面刷新。它监控的是内存压力，自己不该成为压力的一部分。
 
-- 内核 Memory Pressure（DispatchSource 事件，即时）
-- Swap 使用量（默认 2 / 5 / 9 GB 三档，弱信号，最高只到 0.7——常态高 swap 的机器不会
-  仅因绝对值就冲到 Critical）
-- Swap 增长速度（60 秒滑窗，150 / 400 / 800 MB/min 三档）
-- 物理内存占用（wire+active+compressed）
-- Page-out 与解压缩速率（thrashing 迹象）
-- 单进程组 RSS 持续增长（5 分钟窗口趋势）
+## 说明
 
-升级需要同级别信号**持续** 12/10/6 秒；降级需要低于阈值 0.12 且持续 30 秒（hysteresis）；
-同一级别通知有 120 秒冷却。所有阈值可在 Settings ▸ Thresholds 调整。
-
-- **本机动态基线**：学习正常状态下 Swap / 换页 / 解压缩 / 进程组 RSS 的常态
-  （EWMA，仅从正常时段学习，启动时从 24h 历史自举），风险判断 = 固定安全阈值
-  + 相对基线偏离，不同内存容量的机器不再共用一套绝对阈值；
-- **开发残留检测**：识别父任务已结束（被重挂到 launchd）、闲置 30 分钟以上但
-  仍占几百 MB 的 node/MCP/gradle/xcodebuild 等孤儿任务，标记"疑似残留"并支持
-  一键清理；
-- **Warning**：菜单栏图标变化 + 原生通知（含 Top 3 进程）。
-- **Danger**：再次通知，并标注内存增长最快的进程；Popover 内可对任意非保护进程组
-  一键 Pause（SIGSTOP）/ Resume（SIGCONT）/ Terminate（SIGTERM）。
-- **Critical + Auto Protection**：按 Rescue Score 挑选目标（预计释放内存 × 异常增长
-  × 后台权重；前台应用强保护、孤儿残留任务优先），自动暂停最优对象；
-- **分步恢复**：回到正常后不一次性恢复——稳定满恢复等待窗口（默认 60s）后每次
-  恢复一个任务（最小优先），观察期（默认 45s）内若再次承压则重新暂停该任务；
-  内存守护退出时自动恢复全部已暂停任务（不会留下永久 SIGSTOP 的进程）。
-- **Critical + Emergency Terminate（默认关闭）**：持续 Critical 达到设定时长后，
-  对明确勾选的应用 SIGTERM，宽限期后仍存活才用 SIGKILL 兜底（仅此一种自动 SIGKILL 场景）。
-
-## 安全机制
-
-- 保护名单（永不触碰）：kernel_task、launchd、WindowServer、loginwindow、Finder、
-  Dock、SystemUIServer 等系统进程；所有 root 进程；/System、/usr/libexec、/usr/sbin、
-  /sbin、/Library/Apple 路径下的进程（xcodebuild 等开发工具按名称豁免）；应用自身；
-  以及用户在 Protected Apps 里添加的任意组。
-- 自动动作必须同时满足：目标在 Managed Apps 列表 + 用户勾选了对应开关 + 当前是
-  Critical + 保护检查通过。默认所有开关关闭，第一版不会自动处理任何应用。
-- 自动 SIGKILL 仅存在于"Emergency Terminate + SIGTERM 宽限期超时"这一条链路。
-
-## 历史记录与事故报告
-
-SQLite（WAL）写入 `~/Library/Application Support/AI Resource Guard/history.sqlite`：
-风险级别变化、压力变化、每 30–120 秒的系统快照（含 Top 5 进程与增长最快进程）、
-所有手动/自动动作。保留 24 小时 / 1000 条。
-
-**事故报告（v1.1）**：
-- 菜单栏 Popover 底部 "Report" 按钮 / 应用菜单 ⌘I / **点击任意风险通知** 都可打开
-  Incident Report 窗口；
-- 时间线图（1h/6h/24h）：内存/swap 曲线 + 风险级别色带 + swap 峰值标记；
-- "Heaviest processes"：窗口期内每个进程组的峰值 RSS 与出现时间——直接回答
-  "是哪个进程在什么时候把系统拖垮了"；
-- App 重启时如果检测到上次会话的最后快照处于 Danger/Critical，会立即记录
-  "Previous session ended at …" 事件并发通知（机器卡死重启后第一次打开就能看到）。
-
-Settings ▸ History 顶部同样展示最近 6 小时时间线，下方为完整事件列表。
-
-## 性能设计
-
-- Memory Pressure 用内核事件源，不轮询。
-- 系统指标 5s（Normal）/ 2s（Warning）/ 1s（Danger+）自适应。
-- 进程扫描 20s / 10s / 5s 自适应；单次扫描为纯 libproc 系统调用，无 shell。
-- Popover 关闭时 UI 数据发布节流到 ~15s；空闲 CPU 目标 ≈ 0%。
-
-## 公开 API 清单（无私有 API）
-
-- `DispatchSource.makeMemoryPressureSource`
-- `host_statistics64(HOST_VM_INFO64)`、`host_processor_info(HOST_CPU_LOAD_INFO)`
-- `sysctlbyname("vm.swapusage" / "hw.memsize")`、`KERN_PROCARGS2`
-- `proc_listallpids` / `proc_pid_rusage` / `proc_pidpath` / `proc_pidinfo` / `proc_name`
-- `kill` (SIGSTOP/SIGCONT/SIGTERM/SIGKILL)、`SMAppService`、`UNUserNotificationCenter`
-- SwiftUI `MenuBarExtra`（macOS 13+），Liquid Glass `glassEffect` /
-  `GlassEffectContainer` / `.buttonStyle(.glass)`（macOS 26+，旧系统自动回退到
-  `.ultraThinMaterial`）
-
-## 已知边界
-
-- 需要 TCC 通知权限（首次启动会请求）；未授权时通知静默丢弃，其余功能不受影响。
-- root 进程（如 sudo 启动的构建）无法被暂停/终止，会被标记为受保护。
-- Launch at Login 用 SMAppService；ad-hoc 签名 + 稳定路径（/Applications）下工作，
-  从 DerivedData 运行时可能注册失败（Settings 里会显示错误）。
-- `--diagnostics` 命令行参数：无 UI 跑 14 秒真实监控并打印（验证用）。
+- 它是一个原生的 Swift/SwiftUI 应用，只使用 macOS 公开接口，没有内核扩展、没有后台守护进程、不需要 root；
+- 由终端命令启动的 root 进程（如 sudo 构建任务）无法被暂停或终止，会显示为受保护状态；
+- 历史数据保存在本机（最近 24 小时或 1000 条），不上传任何信息。
 
 ## 开发
 
-- 架构说明见 [ARCHITECTURE.md](ARCHITECTURE.md)。
-- 单元测试仅覆盖 RiskEngine（滞回/持续/冷却）与 ProtectedProcessPolicy（保护规则）：
-  `xcodebuild test -project AIResourceGuard.xcodeproj -scheme "AI Resource Guard"`。
+- 架构与设计说明见 [ARCHITECTURE.md](ARCHITECTURE.md)；
+- 单元测试：`xcodebuild test -project AIResourceGuard.xcodeproj -scheme "AI Resource Guard"`，覆盖风险评估、保护策略、目标选择、恢复计划与事故摘要等核心逻辑。
