@@ -11,13 +11,11 @@ struct MenuBarLabel: View {
         HStack(spacing: 3) {
             Image(systemName: level.menuBarIcon)
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(
-                    level == .normal ? AnyShapeStyle(.primary) : AnyShapeStyle(level.color))
             if level != .normal {
                 Text(level.label)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(level.color)
             }
         }
+        .foregroundStyle(level == .normal ? Color.primary : level.color)
     }
 }

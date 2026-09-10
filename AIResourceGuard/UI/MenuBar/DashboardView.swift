@@ -11,24 +11,26 @@ import SwiftUI
 /// No cards, no charts, no borders: native spacing, typography and a couple
 /// of system hairline dividers. Liquid Glass is reserved for the expanded
 /// app detail (the key interactive area).
+///
+/// NOTE: no ScrollView at the root — MenuBarExtra windows size themselves
+/// from the content's intrinsic size, and a ScrollView has none (the
+/// popover opens as a 400×10 sliver). Content is bounded by construction:
+/// ≤ 5 app rows, ≤ 12 process rows per expansion.
 struct DashboardView: View {
     @EnvironmentObject var store: MonitorCenter
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HeaderView()
-                StatusView()
-                MetricsGrid()
-                Divider()
-                NotableAppsSection()
-                Divider()
-                FooterView()
-            }
-            .padding(16)
+        VStack(alignment: .leading, spacing: 14) {
+            HeaderView()
+            StatusView()
+            MetricsGrid()
+            Divider()
+            NotableAppsSection()
+            Divider()
+            FooterView()
         }
+        .padding(16)
         .frame(width: 400)
-        .frame(maxHeight: 640)
         .onAppear { store.popoverOpened() }
         .onDisappear { store.popoverVisible = false }
     }
