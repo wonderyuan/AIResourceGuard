@@ -4,6 +4,14 @@
 
 如果你也遇到过这样的场景——Cursor、Xcode、模拟器、MCP 服务、构建任务同时开着，内存不知不觉被吃光，Swap 悄悄涨满，风扇狂转之后整个系统卡死，重启之后却查不到是谁干的——它会替你盯着，并在一切太迟之前出手。
 
+| 主面板 | 设置 |
+|:---:|:---:|
+| ![主面板](docs/screenshots/popover.png) | ![设置](docs/screenshots/settings.png) |
+
+| 事件报告 | 首次使用引导 |
+|:---:|:---:|
+| ![事件报告](docs/screenshots/incident-report.png) | ![引导](docs/screenshots/onboarding.png) |
+
 ## 它能为你做什么
 
 **一眼看到还剩多少余地**

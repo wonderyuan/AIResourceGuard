@@ -1,14 +1,19 @@
 import SwiftUI
 
-/// One row in "值得关注的应用". Collapsed: name, aggregated memory, growth
-/// trend, CPU, risk-source tag. Expanded (the key interactive area, on
-/// Liquid Glass): process tree + 暂停/恢复/终止.
+/// One row in "谁在占用内存". Collapsed: name, aggregated memory, growth
+/// trend, CPU, risk-source tag. Expanded: process tree + 暂停/恢复/终止.
+///
+/// IMPORTANT: no confirmationDialog / alert here — in a MenuBarExtra window
+/// they steal focus and dismiss the entire popover. Destructive actions use
+/// inline two-click confirm instead.
 struct ProcessGroupRow: View {
     let group: ProcessGroupInfo
 
     @EnvironmentObject var store: MonitorCenter
     @State private var expanded = false
-    @State private var confirmTerminate = false
+    /// Inline two-click confirm for destructive actions (never a dialog —
+    /// dialogs close the whole popover in MenuBarExtra).
+    @State private var terminateArmed = false
 
     private var isProtected: Bool {
         store.settingsStore.isProtectedGroup(group.key)
@@ -18,6 +23,7 @@ struct ProcessGroupRow: View {
         VStack(spacing: 0) {
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                terminateArmed = false
             } label: {
                 HStack(spacing: 8) {
                     GroupIconView(group: group)
@@ -97,7 +103,7 @@ struct ProcessGroupRow: View {
         }
     }
 
-    // MARK: - Expanded detail (key interactive area → Liquid Glass)
+    // MARK: - Expanded detail
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -146,44 +152,65 @@ struct ProcessGroupRow: View {
                     .foregroundStyle(.tertiary)
             }
 
+            // Inline two-click confirm: first click arms the button, second
+            // click executes. NEVER use confirmationDialog here — it steals
+            // focus and closes the entire MenuBarExtra popover.
             HStack(spacing: 8) {
                 if group.isStaleWorkload {
-                    Button("结束遗留任务") { confirmTerminate = true }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .tint(.teal)
+                    actionButton("结束遗留任务", color: .teal) {
+                        store.protection.terminate(group)
+                    }
                 } else if group.anyStopped {
-                    Button("恢复任务") { store.protection.resume(group) }
-                        .glassActionButton()
-                        .controlSize(.small)
+                    actionButton("恢复任务", color: .accentColor) {
+                        store.protection.resume(group)
+                    }
                 } else {
-                    Button("暂停任务") { store.protection.pause(group) }
-                        .glassActionButton()
-                        .controlSize(.small)
+                    actionButton("暂停任务", color: .accentColor) {
+                        store.protection.pause(group)
+                    }
                 }
+
                 Spacer()
-                Button("终止任务") { confirmTerminate = true }
+
+                if terminateArmed {
+                    Button {
+                        terminateArmed = false
+                        store.protection.terminate(group)
+                    } label: {
+                        Text("确认终止 \(group.displayName)？")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(.red)
+
+                    Button("取消") {
+                        terminateArmed = false
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button("终止任务") {
+                        terminateArmed = true
+                    }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(.red)
+                }
             }
         }
         .padding(12)
         .glassSurface(Design.Radius.panel)
-        .confirmationDialog(
-            "终止 \(group.displayName)？",
-            isPresented: $confirmTerminate,
-            titleVisibility: .visible) {
-            Button("终止任务（SIGTERM）", role: .destructive) {
-                store.protection.terminate(group)
-            }
-            Button("强制退出（SIGKILL）", role: .destructive) {
-                store.protection.forceTerminate(group)
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("将向 \(group.processes.count) 个进程发送 SIGTERM，未保存的工作可能丢失。")
-        }
+    }
+
+    /// Standard bordered button — .glass button style has hit-testing issues
+    /// inside MenuBarExtra popover windows.
+    private func actionButton(_ title: String, color: Color,
+                              action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .tint(color)
     }
 }
 
