@@ -6,6 +6,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+permissions:
+  contents: write   # publish Releases
+  actions: write    # prune old build artifacts
+
 jobs:
   build-dmg:
     name: Build and package DMG
@@ -36,7 +40,14 @@ jobs:
         run: |
           APP="build/Build/Products/Release/AI Resource Guard.app"
           VERSION=$(plutil -extract CFBundleShortVersionString raw -o - -- "$APP/Contents/Info.plist")
-          DMG="AI-Resource-Guard-${VERSION}-${GITHUB_SHA::7}.dmg"
+          # Tagged builds get a clean versioned name; main-branch builds get
+          # a stable "-latest" name so the rolling release asset is replaced
+          # instead of piling up.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            DMG="AI-Resource-Guard-${VERSION}.dmg"
+          else
+            DMG="AI-Resource-Guard-${VERSION}-latest.dmg"
+          fi
           echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
           hdiutil create \
             -volname "AI Resource Guard" \
@@ -52,14 +63,49 @@ jobs:
           path: ${{ env.DMG_PATH }}
           if-no-files-found: error
 
-      # Tag pushes (v*) attach the DMG to a GitHub Release.
-      - name: Attach to GitHub Release
+      # Keep only the 2 most recent DMG artifacts; delete older ones.
+      - name: Prune old artifacts (keep 2 most recent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IDS=$(gh api \
+            "repos/${{ github.repository }}/actions/artifacts?name=AI-Resource-Guard-DMG&per_page=100" \
+            --jq '[.artifacts[]] | sort_by(.created_at) | reverse | .[2:] | .[].id')
+          if [ -n "$IDS" ]; then
+            echo "$IDS" | while read -r id; do
+              echo "Deleting old artifact $id"
+              gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id"
+            done
+          else
+            echo "Nothing to prune."
+          fi
+
+      # main branch: keep a rolling pre-release visible on the repo home.
+      - name: Publish rolling pre-release (main)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 最新构建
+          prerelease: true
+          files: ${{ env.DMG_PATH }}
+          body: |
+            每次 push 到 main 后自动构建（Apple Silicon / Intel 通用）。
+
+            下载 DMG 后拖入「应用程序」。首次打开若提示无法验证开发者：
+            右键点应用 →「打开」，或执行
+            `xattr -d com.apple.quarantine "/Applications/AI Resource Guard.app"`。
+
+            稳定版本会以 `v*` 标签发布，不在此预发布列表中堆积。
+
+      # v* tags: stable versioned release.
+      - name: Attach to GitHub Release (tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.DMG_PATH }}
           body: |
-            下载 DMG 后拖入「应用程序」即可使用（Apple Silicon）。
+            下载 DMG 后拖入「应用程序」即可使用（Apple Silicon / Intel 通用）。
 
             首次打开若提示无法验证开发者：右键点应用 →「打开」，或
             `xattr -d com.apple.quarantine "/Applications/AI Resource Guard.app"`。
