@@ -14,9 +14,18 @@ final class MonitorCenter: ObservableObject {
 
     @Published private(set) var system: SystemSample?
     @Published private(set) var groups: [ProcessGroupInfo] = []
+    /// Curated "值得关注的应用" — risk sources first, then stable heavies.
+    @Published private(set) var notableApps: [ProcessGroupInfo] = []
     @Published private(set) var assessment = RiskAssessment.initial
     @Published private(set) var pressureLevel: PressureLevel = .normal
+    @Published private(set) var actionFeedback: [ActionFeedback] = []
     @Published var popoverVisible = false
+
+    struct ActionFeedback: Identifiable {
+        let id = UUID()
+        let text: String
+        let date = Date()
+    }
 
     let settingsStore: SettingsStore
     let history = HistoryStore.shared
@@ -54,10 +63,13 @@ final class MonitorCenter: ObservableObject {
         guard !started else { return }
         started = true
         log.info("AI Resource Guard starting")
-        history.record(HistoryEvent(kind: "launch", summary: "AI Resource Guard started"))
+        history.record(HistoryEvent(kind: "launch", summary: "内存守护已启动"))
 
         Notifier.shared.onOpenIncident = {
             IncidentWindowController.shared.show()
+        }
+        protection.onFeedback = { [weak self] text in
+            self?.pushFeedback(text)
         }
 
         pressureMonitor.onEvent = { [weak self] level in
@@ -86,6 +98,13 @@ final class MonitorCenter: ObservableObject {
 
     // MARK: - Event handling
 
+    private func pushFeedback(_ text: String) {
+        actionFeedback.insert(ActionFeedback(text: text), at: 0)
+        if actionFeedback.count > 5 {
+            actionFeedback = Array(actionFeedback.prefix(5))
+        }
+    }
+
     private func handlePressure(_ level: PressureLevel) {
         let old = pressureLevel
         pressureLevel = level
@@ -93,7 +112,7 @@ final class MonitorCenter: ObservableObject {
         if old != level {
             history.record(HistoryEvent(
                 kind: "pressureChange",
-                summary: "Memory pressure: \(old.label) → \(level.label)"))
+                summary: "内存压力：\(old.label) → \(level.label)"))
             log.info("Pressure \(old.label) -> \(level.label)")
         }
         systemMonitor.sampleNow()
@@ -119,24 +138,27 @@ final class MonitorCenter: ObservableObject {
         if result.justEscalated || result.justDeescalated {
             history.record(HistoryEvent(
                 kind: "riskChange",
-                summary: "Risk: \(result.previousLevel.label) → \(result.level.label)"
-                    + (result.dominantReason.map { " — \($0)" } ?? ""),
+                summary: "风险：\(result.previousLevel.label) → \(result.level.label)"
+                    + " — \(result.headline)",
                 detail: result.reasons.joined(separator: "\n")))
             log.info("Risk \(result.previousLevel.label) -> \(result.level.label)")
         }
 
         if result.shouldNotify && settingsStore.settings.notificationsEnabled {
-            var body = result.reasons.prefix(2).joined(separator: ". ")
+            var body = result.headline
+            if !result.reasons.isEmpty {
+                body += "。" + result.reasons.prefix(2).joined(separator: "，")
+            }
             if result.level >= .danger, let fastest = fastestGrowing {
-                body += ". Fastest growing: \(fastest.name) \(fmtRate(fastest.bytesPerMin))"
+                body += "。增长最快：\(fastest.name)"
             } else if result.level == .warning {
                 let top = latestGroups.prefix(3)
                     .map { "\($0.displayName) \(fmtBytes($0.totalRSS))" }
-                    .joined(separator: ", ")
-                if !top.isEmpty { body += ". Top: \(top)" }
+                    .joined(separator: "、")
+                if !top.isEmpty { body += "。占用最高：\(top)" }
             }
             Notifier.shared.notify(
-                title: "AI Resource Guard — \(result.level.label)",
+                title: "内存守护 — \(result.level.label)",
                 body: body,
                 openIncident: true)
         }
@@ -169,12 +191,35 @@ final class MonitorCenter: ObservableObject {
     private func handleProcess(_ output: ProcessMonitor.Output) {
         latestGroups = output.groups
         fastestGrowing = output.fastestGrowing
+        let notable = computeNotable(output.groups)
 
         // Skip expensive UI publishes while the popover is closed.
         if popoverVisible || Date().timeIntervalSince(lastHiddenPublishAt) > 15 {
             groups = output.groups
+            notableApps = notable
             lastHiddenPublishAt = Date()
         }
+    }
+
+    /// "值得关注的应用" selection — explicitly NOT top-by-RSS:
+    /// 1. groups actively growing (> 50 MB/min = 风险源), worst growth first;
+    /// 2. then stable heavy residents (> 300 MB), largest first.
+    private func computeNotable(_ groups: [ProcessGroupInfo]) -> [ProcessGroupInfo] {
+        let riskThreshold = 50.0 * 1_048_576
+        let sizeFloor = 300.0 * 1_048_576
+        let candidates = groups.filter {
+            Double($0.totalRSS) > sizeFloor || $0.trendBytesPerMin > riskThreshold
+        }
+        return candidates
+            .sorted { lhs, rhs in
+                let lhsRisk = lhs.trendBytesPerMin > riskThreshold
+                let rhsRisk = rhs.trendBytesPerMin > riskThreshold
+                if lhsRisk != rhsRisk { return lhsRisk }
+                if lhsRisk { return lhs.trendBytesPerMin > rhs.trendBytesPerMin }
+                return lhs.totalRSS > rhs.totalRSS
+            }
+            .prefix(5)
+            .map { $0 }
     }
 
     // MARK: - History snapshot
@@ -202,9 +247,9 @@ final class MonitorCenter: ObservableObject {
             .flatMap { String(data: $0, encoding: .utf8) }
         history.record(HistoryEvent(
             kind: "snapshot",
-            summary: "risk \(assessment.level.label), mem \(fmtBytes(sample.usedBytes))"
+            summary: "风险 \(assessment.level.label) · 内存 \(fmtBytes(sample.usedBytes))"
                 + "/\(fmtBytes(sample.physicalTotalBytes))"
-                + ", swap \(fmtBytes(sample.swapUsedBytes))",
+                + " · Swap \(fmtBytes(sample.swapUsedBytes))",
             detail: encoded))
     }
 
@@ -213,18 +258,18 @@ final class MonitorCenter: ObservableObject {
     /// lockup). Surface it immediately.
     private func checkPreviousSessionEnd() {
         guard let last = history.lastSnapshotBefore(Date()) else { return }
-        guard last.riskLevel == .danger || last.riskLevel == .critical else { return }
-        let summary = "Previous session ended at \(last.riskLevel.label) — "
-            + "mem \(fmtBytes(last.memUsedBytes))/\(fmtBytes(last.memTotalBytes)), "
-            + "swap \(fmtBytes(last.swapUsedBytes))"
+        let lastLevel = last.riskLevel
+        guard lastLevel == .danger || lastLevel == .critical else { return }
+        let summary = "上次会话以「\(lastLevel.label)」结束 — "
+            + "内存 \(fmtBytes(last.memUsedBytes))/\(fmtBytes(last.memTotalBytes))，"
+            + "Swap \(fmtBytes(last.swapUsedBytes))"
         history.record(HistoryEvent(kind: "riskChange", summary: summary))
-        log.warning("Previous session ended at \(last.riskLevel.label, privacy: .public)")
+        log.warning("Previous session ended at \(lastLevel.label, privacy: .public)")
         if settingsStore.settings.notificationsEnabled {
             Notifier.shared.notify(
-                title: "AI Resource Guard — previous session ended at \(last.riskLevel.label)",
-                body: "Last recorded state: memory \(fmtBytes(last.memUsedBytes)) of "
-                    + "\(fmtBytes(last.memTotalBytes)), swap \(fmtBytes(last.swapUsedBytes)). "
-                    + "Click to see the timeline.",
+                title: "内存守护 — 上次会话以「\(lastLevel.label)」结束",
+                body: "最后记录：内存 \(fmtBytes(last.memUsedBytes)) / \(fmtBytes(last.memTotalBytes))，"
+                    + "Swap \(fmtBytes(last.swapUsedBytes))。点击查看事件报告。",
                 openIncident: true)
         }
     }

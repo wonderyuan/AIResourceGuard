@@ -9,9 +9,16 @@ struct AIResourceGuardApp: App {
         if CommandLine.arguments.contains("--diagnostics") {
             DiagnosticsRunner.run(seconds: 25)
         }
-        // Never start monitors while running under the test host.
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+        let isTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        if !isTest {
             MonitorCenter.shared.start()
+        }
+        // Dev hook: render the popover content in a plain window so it can be
+        // inspected without clicking the menu-bar icon.
+        if CommandLine.arguments.contains("--ui-preview") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                UIPreviewWindowController.shared.show()
+            }
         }
     }
 
@@ -33,11 +40,43 @@ struct AIResourceGuardApp: App {
         }
         .commands {
             CommandGroup(after: .windowList) {
-                Button("Incident Report") {
+                Button("事件报告…") {
                     IncidentWindowController.shared.show()
                 }
                 .keyboardShortcut("i", modifiers: .command)
             }
         }
+    }
+}
+
+/// `--ui-preview`: opens a window hosting the exact popover content — used to
+/// verify the primary surface without menu-bar interaction.
+@MainActor
+final class UIPreviewWindowController: NSWindowController {
+    static let shared = UIPreviewWindowController()
+
+    private init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false)
+        window.title = "内存守护（预览）"
+        window.contentView = NSHostingView(rootView:
+            DashboardView()
+                .environmentObject(MonitorCenter.shared)
+                .environmentObject(MonitorCenter.shared.settingsStore))
+        window.isReleasedWhenClosed = false
+        window.center()
+        super.init(window: window)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("UIPreviewWindowController is created via shared")
+    }
+
+    func show() {
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
     }
 }

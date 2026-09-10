@@ -30,18 +30,22 @@ struct ManagedAppConfig: Codable, Equatable, Identifiable {
 
     var id: String { key }
 
-    // Seed list: every group the aggregator knows how to recognize.
+    // Seed list: units the aggregator recognizes, after process-tree rollup
+    // the natural units are parent apps (ZCode → node/MCP/shell, IntelliJ →
+    // java/Gradle, Xcode → xcodebuild/swiftc/sourcekitd).
     // Nothing is opted in by default — the user must flip the switches.
     static let defaults: [ManagedAppConfig] = [
+        .init(key: "app:ZCode", displayName: "ZCode"),
+        .init(key: "app:IntelliJ IDEA", displayName: "IntelliJ IDEA"),
         .init(key: "app:Cursor", displayName: "Cursor"),
-        .init(key: "codex", displayName: "Codex"),
         .init(key: "app:Code", displayName: "Visual Studio Code"),
-        .init(key: "xcode", displayName: "Xcode & Toolchain"),
-        .init(key: "sim", displayName: "Simulator"),
+        .init(key: "app:Xcode", displayName: "Xcode"),
+        .init(key: "xcode", displayName: "Xcode 工具链"),
+        .init(key: "sim", displayName: "模拟器"),
+        .init(key: "app:Terminal", displayName: "终端"),
+        .init(key: "codex", displayName: "Codex"),
         .init(key: "node", displayName: "node"),
         .init(key: "bun", displayName: "bun"),
-        .init(key: "mcp-node", displayName: "MCP Server (node)"),
-        .init(key: "mcp-bun", displayName: "MCP Server (bun)"),
     ]
 }
 

@@ -1,38 +1,27 @@
 import SwiftUI
 
-// MARK: - Liquid Glass with pre-26 fallback
+// MARK: - Liquid Glass, used sparingly
 
 extension View {
-    /// Card background: native glass effect on macOS 26+, ultra-thin
-    /// material elsewhere. Keep surfaces restrained — no gradients.
+    /// Glass surface for *key interactive* areas only (expanded app detail,
+    /// incident cards). The popover itself is already a native glass window —
+    /// inner content stays plain with native typography and spacing.
     @ViewBuilder
-    func cardBackground(_ cornerRadius: CGFloat = 14) -> some View {
+    func glassSurface(_ cornerRadius: CGFloat = 12) -> some View {
         if #available(macOS 26.0, *) {
             glassEffect(in: .rect(cornerRadius: cornerRadius))
         } else {
-            background(.ultraThinMaterial, in: .rect(cornerRadius: cornerRadius))
+            background(.quaternary.opacity(0.4), in: .rect(cornerRadius: cornerRadius))
         }
     }
 
+    /// Glass button for primary inline actions (暂停任务 / 恢复任务).
     @ViewBuilder
-    func glassButton() -> some View {
+    func glassActionButton() -> some View {
         if #available(macOS 26.0, *) {
             buttonStyle(.glass)
         } else {
             self
-        }
-    }
-}
-
-/// Groups cards so macOS 26+ merges their glass shapes.
-struct CardsContainer<Content: View>: View {
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: 10) { content }
-        } else {
-            content
         }
     }
 }

@@ -1,14 +1,39 @@
 import Foundation
 
-/// Pure rules that collapse individual processes into the groups shown in the
-/// UI and referenced by Managed/Protected lists:
-///   - everything inside `X.app` → one group for X (Cursor, Code, Xcode, …)
-///   - Xcode build toolchain binaries (`xcodebuild`, `swiftc`, `sourcekitd`,
-///     `clang`, …) roll into "Xcode & Toolchain"
-///   - CoreSimulator runtime processes → "Simulator"
-///   - `node`/`bun`/`deno` whose argv mentions an MCP server → "MCP Server"
-///   - everything else groups by executable name
+/// Pure rules that collapse individual processes into "task groups".
+///
+/// Classification order:
+/// 1. A process whose own executable lives inside `X.app` belongs to X
+///    (Cursor + Cursor Helper, Xcode + xcodebuild/swiftc/sourcekitd…).
+/// 2. Otherwise, ProcessMonitor walks the ppid chain: the first ancestor
+///    inside an app bundle claims the process — ZCode → node/MCP/shell,
+///    IntelliJ → java/Gradle, 终端 → CLI-launched tools. Detached daemons
+///    (reparented to launchd) fall through to name-based groups.
+/// 3. CoreSimulator runtime processes → 模拟器.
+/// 4. Fallback: group by executable name.
 enum ProcessTreeAggregator {
+    /// Bundles that map to a dedicated (non `app:`) group key.
+    static let knownAppGroups: [String: String] = [
+        "Cursor": "app:Cursor",
+        "Code": "app:Code",
+        "Xcode": "app:Xcode",
+        "ZCode": "app:ZCode",
+        "Codex": "codex",
+        "Simulator": "sim",
+        "iOS Simulator": "sim",
+    ]
+
+    /// Chinese / friendly display names for group keys.
+    static let displayNames: [String: String] = [
+        "app:Code": "Visual Studio Code",
+        "app:Terminal": "终端",
+        "app:System Settings": "系统设置",
+        "sim": "模拟器",
+        "xcode": "Xcode 工具链",
+    ]
+
+    /// Toolchain binaries that still make sense as a standalone fallback
+    /// group when no ancestor app can be found (CLI / detached).
     static let xcodeToolchainNames: Set<String> = [
         "xcodebuild", "xctest", "swiftc", "swift", "swift-frontend", "swift-driver",
         "swift-package-executable", "clang", "clang++", "ld", "ld64", "sourcekitd",
@@ -16,22 +41,6 @@ enum ProcessTreeAggregator {
         "swift-format", "swift-demangle", "dsymutil",
     ]
 
-    static let knownAppGroups: [String: String] = [
-        "Cursor": "app:Cursor",
-        "Code": "app:Code",
-        "Xcode": "xcode",
-        "Codex": "codex",
-        "Simulator": "sim",
-        "iOS Simulator": "sim",
-    ]
-
-    static let knownAppDisplayNames: [String: String] = [
-        "app:Code": "Visual Studio Code",
-        "xcode": "Xcode & Toolchain",
-    ]
-
-    /// Returns `.app` bundle name when the path points inside a bundle's
-    /// `Contents/` tree (heuristic but reliable for helper processes).
     static func appBundleName(path: String) -> String? {
         guard let range = path.range(of: ".app/Contents/") else { return nil }
         let prefix = String(path[path.startIndex..<range.lowerBound])
@@ -39,40 +48,36 @@ enum ProcessTreeAggregator {
         return name.isEmpty ? nil : name
     }
 
-    /// Bundle directory path (for fetching the app icon), or nil.
     static func appBundlePath(path: String) -> String? {
         guard let range = path.range(of: ".app/Contents/") else { return nil }
         return String(path[path.startIndex..<range.lowerBound]) + ".app"
     }
 
-    static func classify(name: String, path: String, isMCP: Bool)
+    /// Stable group identity + display name for an app bundle.
+    static func appGroup(forBundle bundleName: String) -> (key: String, display: String) {
+        let key = knownAppGroups[bundleName] ?? "app:\(bundleName)"
+        let display = displayNames[key] ?? bundleName
+        return (key, display)
+    }
+
+    /// Standalone classification (before ancestor rollup).
+    static func classify(name: String, path: String)
         -> (key: String, display: String, isApp: Bool) {
-        if let app = appBundleName(path: path) {
-            let key = knownAppGroups[app] ?? "app:\(app)"
-            let display = key == "xcode" ? "Xcode & Toolchain"
-                : (knownAppDisplayNames[key] ?? app)
-            return (key, display, true)
+        if let bundle = appBundleName(path: path) {
+            let group = appGroup(forBundle: bundle)
+            return (group.key, group.display, true)
         }
         if path.contains("CoreSimulator") || path.contains("SimRuntime") {
-            return ("sim", "Simulator", false)
+            return ("sim", "模拟器", true)
         }
         switch name {
-        case "node", "npx":
-            return isMCP ? ("mcp-node", "MCP Server (node)", false)
-                         : ("node", "node", false)
-        case "bun":
-            return isMCP ? ("mcp-bun", "MCP Server (bun)", false)
-                         : ("bun", "bun", false)
-        case "deno":
-            return isMCP ? ("mcp-deno", "MCP Server (deno)", false)
-                         : ("deno", "deno", false)
         case "codex", "codex-exec", "codex-cli":
-            return ("codex", "Codex", false)
+            return ("codex", "Codex", true)
         default:
             break
         }
         if xcodeToolchainNames.contains(name) {
-            return ("xcode", "Xcode & Toolchain", false)
+            return ("xcode", "Xcode 工具链", false)
         }
         return ("exe:\(name)", name, false)
     }

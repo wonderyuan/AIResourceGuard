@@ -1,9 +1,22 @@
-# AI Resource Guard
+# AI Resource Guard · 内存守护
 
-原生 macOS 菜单栏常驻应用：在跑 Codex / Cursor / Xcode / Simulator / node / MCP Server
-等 AI 开发任务时，提前发现内存恶化趋势（Memory Pressure / Swap 增速 / 压缩抖动 /
-进程树 RSS 增长），在机器卡死之前发出警告，并允许安全地 Pause / Resume / Terminate
-失控进程。
+原生 macOS 菜单栏工具（Menu Bar Utility，macOS 27 / Liquid Glass 设计语言）：
+日常没有主窗口，只常驻状态栏；点击图标展开 Popover 即完成全部监控与治理。
+
+在跑 ZCode / Cursor / IntelliJ / Xcode / 模拟器 / node / MCP 等开发任务时，提前发现
+内存恶化趋势（内存压力 / Swap 增速 / 压缩抖动 / 进程树增长），在机器卡死之前给出
+一句人类可读的警告（如「Swap 已达到 12.7 GB，并仍在快速增长」），并允许安全地
+暂停 / 恢复 / 终止失控任务。
+
+产品形态（v2 重构）：
+- 状态栏图标实时体现状态：正常 / 注意 / 压力较高 / 即将失控（异常时附带彩色文字）
+- Popover 顶部一句话原因；四个核心指标（当前内存 / Swap / 内存压力 / Swap 趋势）
+- 「值得关注的应用」：风险源（正在增长的进程组）优先于稳定的大进程，绝不按
+  "RSS 最大 = 风险最大"排序；点击展开可在 Liquid Glass 面板中直接治理
+- 自动保护动作直接反馈在 Popover（「已暂停 ZCode 任务」「系统压力已恢复」）
+- 进程按任务组归属：ZCode → node/MCP/shell，IntelliJ → java/Gradle，
+  Xcode → xcodebuild/swiftc/sourcekitd，浏览器 Helper 全部归入主应用
+- 全部界面为简体中文；事件报告（时间线/最重进程/自动保护记录）降级为二级黑匣子
 
 ## 构建与运行
 
@@ -25,7 +38,7 @@ open "build/DerivedData/Build/Products/Debug/AI Resource Guard.app"
 
 ## 状态与治理
 
-Risk Engine 综合以下信号打分（0–1），分为 Normal / Warning / Danger / Critical：
+Risk Engine 综合以下信号打分（0–1），分为 正常 / 注意 / 压力较高 / 即将失控：
 
 - 内核 Memory Pressure（DispatchSource 事件，即时）
 - Swap 使用量（默认 2 / 5 / 9 GB 三档，弱信号，最高只到 0.7——常态高 swap 的机器不会

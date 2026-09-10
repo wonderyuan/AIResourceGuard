@@ -1,15 +1,14 @@
 import SwiftUI
 
-/// One aggregated process group row in "Top Consumers". Click to expand the
-/// process tree (pid, name, RSS, CPU, paused state) with group-level
-/// Pause / Resume / Terminate actions.
+/// One row in "值得关注的应用". Collapsed: name, aggregated memory, growth
+/// trend, CPU, risk-source tag. Expanded (the key interactive area, on
+/// Liquid Glass): process tree + 暂停/恢复/终止.
 struct ProcessGroupRow: View {
     let group: ProcessGroupInfo
 
     @EnvironmentObject var store: MonitorCenter
     @State private var expanded = false
     @State private var confirmTerminate = false
-    @State private var confirmForce = false
 
     private var isProtected: Bool {
         store.settingsStore.isProtectedGroup(group.key)
@@ -22,35 +21,38 @@ struct ProcessGroupRow: View {
             } label: {
                 HStack(spacing: 8) {
                     GroupIconView(group: group)
-                        .frame(width: 20, height: 20)
+                        .frame(width: 22, height: 22)
                     VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
                             Text(group.displayName)
                                 .font(.callout)
                                 .lineLimit(1)
+                            if group.isRiskSource {
+                                Text("风险源")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(.orange.opacity(0.18), in: Capsule())
+                                    .foregroundStyle(.orange)
+                            }
                             if isProtected {
                                 Image(systemName: "lock.fill")
                                     .font(.system(size: 8))
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        Text("\(group.processes.count) processes")
+                        Text("\(group.processes.count) 个进程 · CPU \(cpuText)")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                     Spacer()
-                    Image(systemName: group.trendDirection.symbol)
-                        .font(.caption2)
+                    Text(trendText)
+                        .font(.caption)
+                        .monospacedDigit()
                         .foregroundStyle(trendColor)
-                    VStack(alignment: .trailing, spacing: 1) {
-                        Text(fmtBytes(group.totalRSS))
-                            .font(.callout)
-                            .monospacedDigit()
-                        Text(cpuText)
-                            .font(.caption2)
-                            .monospacedDigit()
-                            .foregroundStyle(.tertiary)
-                    }
+                    Text(fmtBytes(group.totalRSS))
+                        .font(.callout)
+                        .monospacedDigit()
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -70,7 +72,15 @@ struct ProcessGroupRow: View {
 
     private var cpuText: String {
         let pct = group.cpuFraction * 100
-        return pct >= 100 ? String(format: "%.0f%% CPU", pct) : String(format: "%.1f%% CPU", pct)
+        return pct >= 100 ? String(format: "%.0f%%", pct) : String(format: "%.1f%%", pct)
+    }
+
+    private var trendText: String {
+        let mbMin = group.trendBytesPerMin / 1_048_576
+        if mbMin >= 1000 { return String(format: "↑ %.1f GB/分", mbMin / 1000) }
+        if mbMin > 50 { return String(format: "↑ %.0f MB/分", mbMin) }
+        if mbMin < -50 { return String(format: "↓ %.0f MB/分", -mbMin) }
+        return "稳定"
     }
 
     private var trendColor: Color {
@@ -81,19 +91,14 @@ struct ProcessGroupRow: View {
         }
     }
 
-    // MARK: - Expanded detail
+    // MARK: - Expanded detail (key interactive area → Liquid Glass)
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 8) {
             if group.anyStopped {
-                Label("Paused", systemImage: "pause.circle.fill")
+                Label("已暂停", systemImage: "pause.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
-            }
-            if abs(group.trendBytesPerMin) > 50 * 1_048_576 {
-                Text("Trend: \(fmtRate(group.trendBytesPerMin)) (5 min window)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             let parentPids = Set(group.processes.map(\.ppid))
@@ -109,6 +114,14 @@ struct ProcessGroupRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .padding(.leading, parentPids.contains(proc.ppid) ? 10 : 0)
+                    if proc.isMCP {
+                        Text("MCP")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.blue.opacity(0.15), in: Capsule())
+                            .foregroundStyle(.blue)
+                    }
                     Spacer()
                     if proc.isStopped {
                         Image(systemName: "pause.circle.fill")
@@ -123,46 +136,47 @@ struct ProcessGroupRow: View {
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(.tertiary)
-                        .frame(width: 34, alignment: .trailing)
+                        .frame(width: 32, alignment: .trailing)
                 }
             }
             if group.processes.count > 12 {
-                Text("+ \(group.processes.count - 12) more…")
+                Text("还有 \(group.processes.count - 12) 个进程…")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
 
             HStack(spacing: 8) {
                 if group.anyStopped {
-                    Button("Resume") { store.protection.resume(group) }
+                    Button("恢复任务") { store.protection.resume(group) }
+                        .glassActionButton()
                         .controlSize(.small)
                 } else {
-                    Button("Pause") { store.protection.pause(group) }
+                    Button("暂停任务") { store.protection.pause(group) }
+                        .glassActionButton()
                         .controlSize(.small)
                 }
                 Spacer()
-                Button("Terminate") { confirmTerminate = true }
+                Button("终止任务") { confirmTerminate = true }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                     .tint(.red)
             }
-            .buttonStyle(.bordered)
         }
-        .padding(10)
-        .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 8))
+        .padding(12)
+        .glassSurface()
         .confirmationDialog(
-            "Terminate \(group.displayName)?",
+            "终止 \(group.displayName)？",
             isPresented: $confirmTerminate,
             titleVisibility: .visible) {
-            Button("Terminate (SIGTERM)", role: .destructive) {
+            Button("终止任务（SIGTERM）", role: .destructive) {
                 store.protection.terminate(group)
             }
-            Button("Force Quit (SIGKILL)", role: .destructive) {
-                confirmForce = false
+            Button("强制退出（SIGKILL）", role: .destructive) {
                 store.protection.forceTerminate(group)
             }
-            Button("Cancel", role: .cancel) {}
+            Button("取消", role: .cancel) {}
         } message: {
-            Text("Sends SIGTERM to \(group.processes.count) processes; unsaved work may be lost.")
+            Text("将向 \(group.processes.count) 个进程发送 SIGTERM，未保存的工作可能丢失。")
         }
     }
 }
@@ -193,7 +207,7 @@ struct GroupIconView: View {
         case "sim": return "iphone"
         case "codex": return "brain"
         default:
-            if group.key.hasPrefix("mcp-") { return "server.rack" }
+            if group.key.hasPrefix("exe:") { return "terminal" }
             return "app.dashed"
         }
     }

@@ -8,8 +8,14 @@ private let log = Logger(subsystem: "local.dev.AIResourceGuard", category: "prot
 /// gate. Runs the automatic-protection flow: at Critical (opt-in) auto-pause
 /// managed apps; if Emergency Kill is on and Critical persists, SIGTERM the
 /// approved groups, then SIGKILL only after a grace period as the last resort.
+///
+/// Every user-visible outcome is reported through `onFeedback` so the
+/// popover can surface it directly ("已暂停 ZCode 任务").
 @MainActor
 final class ProtectionController {
+    /// Short human-readable outcome lines for the popover.
+    var onFeedback: ((String) -> Void)?
+
     private let settingsProvider: () -> AppSettings
     private let policyProvider: () -> ProtectedProcessPolicy
     private unowned let history: HistoryStore
@@ -75,8 +81,14 @@ final class ProtectionController {
             }
         } else {
             criticalSince = nil
-            if assessment.level == .normal, settings.autoResumeOnNormal, !autoPausedPids.isEmpty {
-                resumeAutoPaused()
+            if assessment.level == .normal {
+                if settings.autoResumeOnNormal, !autoPausedPids.isEmpty {
+                    let resumed = resumeAutoPaused()
+                    onFeedback?("系统压力已恢复，已自动恢复 \(resumed) 个任务")
+                } else if assessment.justDeescalated,
+                          assessment.previousLevel >= .danger {
+                    onFeedback?("系统压力已恢复")
+                }
             }
         }
 
@@ -100,19 +112,21 @@ final class ProtectionController {
         }
     }
 
-    private func resumeAutoPaused() {
+    @discardableResult
+    private func resumeAutoPaused() -> Int {
         let pids = autoPausedPids
         autoPausedPids = []
-        guard !pids.isEmpty else { return }
-        var resumed: [Int32] = []
+        guard !pids.isEmpty else { return 0 }
+        var resumed = 0
         for pid in pids where kill(pid, SIGCONT) == 0 || errno == ESRCH {
-            resumed.append(pid)
+            resumed += 1
         }
         history.record(HistoryEvent(
             kind: "action",
-            summary: "Auto-resumed \(resumed.count) process(es) after recovery",
-            detail: "\(resumed)"))
-        log.info("Auto-resumed \(resumed.count) pids")
+            summary: "系统压力已恢复，已自动恢复 \(resumed) 个任务",
+            detail: "\(pids)"))
+        log.info("Auto-resumed \(resumed) pids")
+        return resumed
     }
 
     /// After the grace period, pids that received an automatic SIGTERM and
@@ -126,7 +140,7 @@ final class ProtectionController {
                 if kill(pid, SIGKILL) == 0 {
                     history.record(HistoryEvent(
                         kind: "action",
-                        summary: "Last-resort SIGKILL pid \(pid) (ignored SIGTERM)",
+                        summary: "最后手段：pid \(pid) 未响应 SIGTERM，已发送 SIGKILL",
                         detail: nil))
                     log.warning("Last-resort SIGKILL for pid \(pid)")
                 }
@@ -186,25 +200,44 @@ final class ProtectionController {
             }
         }
 
-        let mode = isAutomatic ? "auto" : "manual"
+        let mode = isAutomatic ? "自动" : "手动"
         if !stopped.isEmpty || !denied.isEmpty || !failed.isEmpty {
-            let summary = "\(mode.capitalized) \(verb(for: action)) \(group.displayName): "
-                + "\(stopped.count) sent \(signalName)"
-                + (denied.isEmpty ? "" : ", \(denied.count) blocked")
-                + (failed.isEmpty ? "" : ", \(failed.count) failed")
+            let summary = "[\(mode)]\(verb(for: action)) \(group.displayName)："
+                + "\(stopped.count) 个进程已发送 \(signalName)"
+                + (denied.isEmpty ? "" : "，\(denied.count) 个被安全策略拦截")
+                + (failed.isEmpty ? "" : "，\(failed.count) 个失败")
             let detail = ["sent: \(stopped)", "blocked: \(denied)",
                           "failed: \(failed)"].joined(separator: "\n")
             history.record(HistoryEvent(kind: "action", summary: summary, detail: detail))
             log.info("\(summary, privacy: .public)")
         }
+
+        // Popover feedback — keep it to one clean sentence per action.
+        if !stopped.isEmpty {
+            switch action {
+            case .pause:
+                onFeedback?("已暂停 \(group.displayName) 任务"
+                    + (isAutomatic ? "（自动保护）" : ""))
+            case .resume:
+                onFeedback?("已恢复 \(group.displayName) 任务")
+            case .terminate:
+                onFeedback?("已请求终止 \(group.displayName) 任务")
+            case .forceTerminate:
+                onFeedback?("已强制退出 \(group.displayName) 任务")
+            }
+        } else if !denied.isEmpty, !isAutomatic {
+            onFeedback?("已拦截对 \(group.displayName) 的操作：\(denied[0])")
+        } else if !failed.isEmpty, !isAutomatic {
+            onFeedback?("操作失败（无权限或进程已退出）")
+        }
     }
 
     private func verb(for action: ProcessAction) -> String {
         switch action {
-        case .pause: return "pause"
-        case .resume: return "resume"
-        case .terminate: return "terminate"
-        case .forceTerminate: return "force-terminate"
+        case .pause: return "暂停"
+        case .resume: return "恢复"
+        case .terminate: return "终止"
+        case .forceTerminate: return "强制退出"
         }
     }
 }

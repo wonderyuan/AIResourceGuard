@@ -1,9 +1,23 @@
-# AI Resource Guard — Architecture (v1)
+# AI Resource Guard — Architecture (v2)
 
-Menu-bar resident app for macOS that watches memory pressure / swap / process
-growth during AI-development workloads (Codex, Cursor, Xcode, Simulator,
-node/bun MCP servers, xcodebuild) and helps pause or terminate runaway
-processes **before** the machine locks up.
+Native macOS menu-bar utility (no main window, MenuBarExtra popover is the
+primary surface, all UI in Simplified Chinese). It watches memory pressure /
+swap / process growth during AI-development workloads (ZCode, Cursor,
+IntelliJ, Xcode, Simulator, node/MCP, xcodebuild) and helps pause or
+terminate runaway task groups **before** the machine locks up.
+
+v2 information architecture:
+- Menu bar: shield glyph + short Chinese status word whenever not 正常.
+- Popover: 一句话原因 (RiskEngine headline, e.g. "Swap 正在快速增长") →
+  four core metrics → 值得关注的应用 (risk sources first: growing > 50 MB/min,
+  then stable heavies > 300 MB; never top-by-RSS) → 自动保护 / 事件报告 / 设置.
+- Process-tree rollup: name-based groups are adopted by their ancestor app
+  (ZCode → node/MCP/shell, IntelliJ → java/Gradle, Xcode → xcodebuild…);
+  detached daemons keep standalone groups.
+- Every protection action feeds a one-line feedback banner in the popover
+  ("已暂停 ZCode 任务", "系统压力已恢复").
+- Incident report (timeline chart, heaviest processes) is a secondary
+  black-box window (⌘I / popover / notification click), not the main UI.
 
 ## Design principles
 

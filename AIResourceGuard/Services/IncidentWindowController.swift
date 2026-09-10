@@ -15,7 +15,7 @@ final class IncidentWindowController: NSWindowController, NSWindowDelegate {
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
-        window.title = "Incident Report"
+        window.title = "事件报告"
         window.contentView = NSHostingView(rootView:
             IncidentReportView()
                 .environmentObject(MonitorCenter.shared)

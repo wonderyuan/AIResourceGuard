@@ -27,7 +27,7 @@ struct HistorySnapshot: Identifiable {
     }
 
     var riskLevel: RiskLevel {
-        RiskLevel.allCases.first { $0.label == risk } ?? .normal
+        RiskLevel.parse(risk)
     }
 }
 

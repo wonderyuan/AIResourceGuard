@@ -183,8 +183,25 @@ final class RiskEngineTests: XCTestCase {
     func testReasonsContainSignalDescriptions() {
         let engine = engine()
         let result = engine.evaluate(input(at: 0, pressure: .warning, swapMB: config.swapWarnMB + 100))
-        XCTAssertTrue(result.reasons.contains { $0.contains("pressure") })
+        XCTAssertTrue(result.reasons.contains { $0.contains("内存压力") })
         XCTAssertTrue(result.reasons.contains { $0.contains("Swap") })
         XCTAssertEqual(result.dominantReason, result.reasons.first)
+    }
+
+    func testHeadlineIsHumanSentence() {
+        let engine = engine()
+        let healthy = engine.evaluate(input(at: 0))
+        XCTAssertEqual(healthy.headline, "系统正常，无需处理")
+
+        var t: TimeInterval = 0
+        var last = healthy
+        for _ in 0..<6 { // sustained critical pressure + heavy swap
+            last = engine.evaluate(input(at: t, pressure: .critical, swapMB: config.swapCriticalMB + 500))
+            t += 5
+        }
+        XCTAssertEqual(last.level, .critical)
+        XCTAssertTrue(last.headline.contains("内存压力"))
+        XCTAssertTrue(last.headline.contains("Swap"))
+        XCTAssertGreaterThan(last.levelAgeSeconds, 0)
     }
 }

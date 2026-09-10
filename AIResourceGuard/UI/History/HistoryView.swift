@@ -9,21 +9,21 @@ struct HistoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("\(events.count) events (last 24h, max 1000)")
+                Text("\(events.count) 条事件（最近 24 小时，最多 1000 条）")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
                     reload()
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("刷新", systemImage: "arrow.clockwise")
                 }
                 Button {
                     HistoryStore.shared.clear()
                     events = []
                     snapshots = []
                 } label: {
-                    Label("Clear", systemImage: "trash")
+                    Label("清空", systemImage: "trash")
                 }
             }
             .padding(8)
@@ -35,7 +35,7 @@ struct HistoryView: View {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.title2)
                         .foregroundStyle(.tertiary)
-                    Text("No events yet")
+                    Text("暂无事件")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -47,10 +47,10 @@ struct HistoryView: View {
                             RiskTimeline(snapshots: snapshots)
                                 .listRowSeparator(.hidden)
                         } header: {
-                            Text("Last 6 hours — memory / swap / risk")
+                            Text("最近 6 小时 — 内存 / Swap / 风险")
                         }
                     }
-                    Section("Events") {
+                    Section("事件列表") {
                         ForEach(events) { event in
                             HistoryEventRow(event: event)
                         }

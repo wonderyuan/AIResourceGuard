@@ -1,28 +1,34 @@
 import SwiftUI
 
-/// The 400pt menu-bar popover: header + Essentials / Risk / Top Consumers
-/// cards on glass, plus the protection footer.
+/// The 400pt menu-bar popover — the product's primary surface.
+///
+/// Information architecture (macOS menu-bar utility, not a dashboard):
+///   1. 状态：一句话说清楚现在怎么样、为什么
+///   2. 四个核心指标：当前内存 / Swap / 内存压力 / Swap 趋势
+///   3. 值得关注的应用：风险源优先，其次稳定的大进程；点击展开治理操作
+///   4. 自动保护开关 + 二级入口（事件报告 / 设置 / 退出）
+///
+/// No cards, no charts, no borders: native spacing, typography and a couple
+/// of system hairline dividers. Liquid Glass is reserved for the expanded
+/// app detail (the key interactive area).
 struct DashboardView: View {
     @EnvironmentObject var store: MonitorCenter
-    @EnvironmentObject var settings: SettingsStore
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 14) {
                 HeaderView()
-                CardsContainer {
-                    VStack(spacing: 10) {
-                        EssentialsCard()
-                        RiskCard()
-                        TopConsumersCard()
-                    }
-                }
+                StatusView()
+                MetricsGrid()
+                Divider()
+                NotableAppsSection()
+                Divider()
                 FooterView()
             }
-            .padding(12)
+            .padding(16)
         }
         .frame(width: 400)
-        .frame(maxHeight: 620)
+        .frame(maxHeight: 640)
         .onAppear { store.popoverOpened() }
         .onDisappear { store.popoverVisible = false }
     }
@@ -34,243 +40,172 @@ private struct HeaderView: View {
     @EnvironmentObject var store: MonitorCenter
 
     var body: some View {
-        HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("AI RESOURCE GUARD")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(store.assessment.level.color)
-                        .frame(width: 8, height: 8)
-                    Text(store.assessment.level.label)
-                        .font(.headline)
-                }
-            }
+        HStack(alignment: .firstTextBaseline) {
+            Text("内存守护")
+                .font(.headline)
             Spacer()
-            PressureBadge(pressure: store.pressureLevel)
-        }
-    }
-}
-
-private struct PressureBadge: View {
-    let pressure: PressureLevel
-
-    var body: some View {
-        Text("Pressure · \(pressure.label)")
-            .font(.caption)
-            .fontWeight(.medium)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(pressure.color.opacity(0.15), in: Capsule())
-            .foregroundStyle(pressure.color)
-    }
-}
-
-// MARK: - Essentials card
-
-private struct EssentialsCard: View {
-    @EnvironmentObject var store: MonitorCenter
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Memory")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                Spacer()
-                if let sample = store.system {
-                    Text("\(fmtBytes(sample.usedBytes)) / \(fmtBytes(sample.physicalTotalBytes))")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                }
-            }
-            MemoryBar(sample: store.system)
-            if let sample = store.system {
-                HStack(spacing: 16) {
-                    miniStat("Used", fmtBytes(sample.usedBytes), color: .accentColor)
-                    miniStat("Compressed", fmtBytes(sample.compressedBytes), color: .indigo)
-                    miniStat("Cached", fmtBytes(sample.cachedBytes), color: .secondary)
-                }
-                Divider()
-                metricRow("Swap", swapText(sample), trailing: fmtRate(sample.swapRateBytesPerMin))
-                metricRow("Pressure", store.pressureLevel.label,
-                          color: store.pressureLevel.color)
-                metricRow("CPU", String(format: "%.0f%%", sample.cpuUsage * 100))
-            } else {
-                Text("Reading system metrics…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardBackground()
-    }
-
-    private func swapText(_ sample: SystemSample) -> String {
-        sample.swapTotalBytes == 0
-            ? "0 MB"
-            : "\(fmtBytes(sample.swapUsedBytes)) of \(fmtBytes(sample.swapTotalBytes))"
-    }
-}
-
-private struct MemoryBar: View {
-    let sample: SystemSample?
-
-    var body: some View {
-        GeometryReader { proxy in
-            let total = max(sample.map { Double($0.physicalTotalBytes) } ?? 1, 1)
-            let used = sample.map { Double($0.usedBytes) } ?? 0
-            let compressed = sample.map { Double($0.compressedBytes) } ?? 0
-            let cached = sample.map { Double($0.cachedBytes) } ?? 0
-            ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary.opacity(0.5))
-                HStack(spacing: 1) {
-                    GeometryReader { geo in
-                        HStack(spacing: 1) {
-                            Rectangle().fill(Color.accentColor)
-                                .frame(width: geo.size.width * (used - compressed) / total)
-                            Rectangle().fill(Color.indigo.opacity(0.8))
-                                .frame(width: geo.size.width * compressed / total)
-                            Rectangle().fill(Color.secondary.opacity(0.5))
-                                .frame(width: geo.size.width * cached / total)
-                        }
-                    }
-                }
-            }
-            .clipShape(Capsule())
-        }
-        .frame(height: 7)
-    }
-}
-
-private func miniStat(_ title: String, _ value: String, color: Color) -> some View {
-    VStack(alignment: .leading, spacing: 1) {
-        Text(value).font(.caption).fontWeight(.medium).monospacedDigit()
-        Text(title).font(.caption2).foregroundStyle(.tertiary)
-    }
-}
-
-@ViewBuilder
-private func metricRow(_ label: String, _ value: String,
-                       color: Color? = nil, trailing: String? = nil) -> some View {
-    HStack {
-        Text(label).font(.caption).foregroundStyle(.secondary)
-        Spacer()
-        if let trailing {
-            Text(trailing).font(.caption).monospacedDigit().foregroundStyle(.tertiary)
-        }
-        Text(value)
-            .font(.caption)
-            .fontWeight(.medium)
-            .monospacedDigit()
-            .foregroundStyle(color ?? .primary)
-    }
-}
-
-// MARK: - Risk card
-
-private struct RiskCard: View {
-    @EnvironmentObject var store: MonitorCenter
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Risk").font(.subheadline).fontWeight(.semibold)
-                Spacer()
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(store.assessment.level.color)
+                    .frame(width: 7, height: 7)
                 Text(store.assessment.level.label)
                     .font(.subheadline)
                     .fontWeight(.semibold)
                     .foregroundStyle(store.assessment.level.color)
-            }
-            if let reason = store.assessment.dominantReason {
-                Text(reason).font(.caption).foregroundStyle(.secondary)
-            }
-            let rest = store.assessment.reasons.dropFirst().prefix(2)
-            if !rest.isEmpty {
-                Text(rest.joined(separator: " · "))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            Divider()
-            HStack(alignment: .top) {
-                riskStat("System Risk", store.assessment.level.label,
-                         color: store.assessment.level.color)
-                Divider().frame(height: 28)
-                riskStat("Swap Trend",
-                         store.system.map { fmtRate($0.swapRateBytesPerMin) } ?? "—",
-                         color: trendColor)
-                Divider().frame(height: 28)
-                riskStat("Memory Pressure", store.pressureLevel.label,
-                         color: store.pressureLevel.color)
+                if store.assessment.levelAgeSeconds > 15 {
+                    Text("已持续 \(durationText(store.assessment.levelAgeSeconds))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardBackground()
-    }
-
-    private var trendColor: Color {
-        guard let rate = store.system?.swapRateBytesPerMin else { return .secondary }
-        if rate > 200 * 1_048_576 { return .red }
-        if rate > 50 * 1_048_576 { return .orange }
-        return .secondary
     }
 }
 
-private func riskStat(_ title: String, _ value: String, color: Color) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-        Text(title).font(.caption2).foregroundStyle(.tertiary)
-        Text(value).font(.caption).fontWeight(.medium).foregroundStyle(color)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
+/// Formats seconds as "42 秒" / "3 分 12 秒" / "1 小时 5 分".
+func durationText(_ seconds: Double) -> String {
+    let s = Int(seconds)
+    if s < 60 { return "\(s) 秒" }
+    if s < 3600 { return "\(s / 60) 分 \(s % 60) 秒" }
+    return "\(s / 3600) 小时 \((s % 3600) / 60) 分"
 }
 
-// MARK: - Top consumers
+// MARK: - Status sentence + action feedback
 
-private struct TopConsumersCard: View {
+private struct StatusView: View {
     @EnvironmentObject var store: MonitorCenter
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Top Consumers").font(.subheadline).fontWeight(.semibold)
-                Spacer()
-                Text("\(store.groups.count) groups")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 5) {
+            Text(store.assessment.headline)
+                .font(.callout)
+                .foregroundStyle(store.assessment.level == .normal ? .secondary : .primary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if store.assessment.level >= .warning {
+                let rest = store.assessment.reasons.prefix(2)
+                if !rest.isEmpty {
+                    Text(rest.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            if store.groups.isEmpty {
-                Text("Scanning processes…")
+
+            if let latest = store.actionFeedback.first,
+               Date().timeIntervalSince(latest.date) < 600 {
+                Label(latest.text, systemImage: "checkmark.shield")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 10)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
+// MARK: - Four core metrics
+
+private struct MetricsGrid: View {
+    @EnvironmentObject var store: MonitorCenter
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 4) {
+            if let sample = store.system {
+                metricCell(label: "当前内存",
+                           value: fmtBytes(sample.usedBytes),
+                           sub: "/ \(fmtBytes(sample.physicalTotalBytes))")
+                metricCell(label: "Swap",
+                           value: sample.swapUsedBytes > 0 ? fmtBytes(sample.swapUsedBytes) : "未使用")
+                metricCell(label: "内存压力",
+                           value: store.pressureLevel.label,
+                           color: store.pressureLevel.color)
+                metricCell(label: "Swap 趋势",
+                           value: trendText(sample),
+                           color: trendColor(sample))
             } else {
-                ForEach(Array(store.groups.prefix(6).enumerated()), id: \.element.id) { index, group in
-                    ProcessGroupRow(group: group)
-                    if index < min(store.groups.count, 6) - 1 {
-                        Divider()
+                Text("正在读取系统指标…")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private func trendText(_ sample: SystemSample) -> String {
+        let mbMin = sample.swapRateBytesPerMin / 1_048_576
+        if mbMin >= 5 { return "↑ \(String(format: "%.0f", mbMin)) MB/分" }
+        if mbMin <= -5 { return "↓ \(String(format: "%.0f", -mbMin)) MB/分" }
+        return "平稳"
+    }
+
+    private func trendColor(_ sample: SystemSample) -> Color {
+        let mbMin = sample.swapRateBytesPerMin / 1_048_576
+        if mbMin >= 200 { return .red }
+        if mbMin >= 50 { return .orange }
+        if mbMin <= -5 { return .green }
+        return .secondary
+    }
+
+    private func metricCell(label: String, value: String,
+                            sub: String? = nil, color: Color? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.system(.callout, design: .rounded).weight(.medium))
+                    .monospacedDigit()
+                    .foregroundStyle(color ?? .primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                if let sub {
+                    Text(sub)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+// MARK: - Notable apps
+
+private struct NotableAppsSection: View {
+    @EnvironmentObject var store: MonitorCenter
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("值得关注的应用")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            if store.notableApps.isEmpty {
+                Text(store.groups.isEmpty ? "正在扫描…" : "当前没有需要关注的应用")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(store.notableApps) { group in
+                        ProcessGroupRow(group: group)
                     }
                 }
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardBackground()
     }
 }
 
 // MARK: - Footer
 
 private struct FooterView: View {
+    @EnvironmentObject var store: MonitorCenter
     @EnvironmentObject var settings: SettingsStore
 
     var body: some View {
-        HStack {
-            Toggle("Protection", isOn: $settings.settings.autoProtectionEnabled)
+        HStack(spacing: 10) {
+            Toggle("自动保护", isOn: $settings.settings.autoProtectionEnabled)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .font(.caption)
@@ -278,19 +213,20 @@ private struct FooterView: View {
             Button {
                 IncidentWindowController.shared.show()
             } label: {
-                Label("Report", systemImage: "chart.xyaxis.line")
+                Label("事件报告", systemImage: "chart.xyaxis.line")
                     .font(.caption)
             }
             .buttonStyle(.borderless)
+            .help("查看风险时间线与历史记录")
             SettingsLink {
-                Label("Settings", systemImage: "gearshape")
+                Label("设置", systemImage: "gearshape")
                     .font(.caption)
             }
             .buttonStyle(.borderless)
             Button {
                 NSApp.terminate(nil)
             } label: {
-                Label("Quit", systemImage: "power")
+                Label("退出", systemImage: "power")
                     .font(.caption)
             }
             .buttonStyle(.borderless)

@@ -7,6 +7,10 @@ import Darwin
 /// scans; per-group RSS keeps a ~5-minute ring for growth trends.
 /// `node`/`bun`/`deno` argv is read via the public `KERN_PROCARGS2` sysctl
 /// (same mechanism ps(1) uses) to tag MCP servers.
+///
+/// After the per-process pass, name-based groups are adopted by their
+/// ancestor app: ZCode → node/MCP/shell, IntelliJ → java/Gradle, 终端 → CLI
+/// tools. Detached daemons (reparented to launchd) keep their own group.
 final class ProcessMonitor {
     struct Output {
         let groups: [ProcessGroupInfo]
@@ -79,19 +83,12 @@ final class ProcessMonitor {
         let wall = max(now.timeIntervalSince(lastScanAt ?? now), 0.5)
         lastScanAt = now
 
-        struct Accumulator {
-            var rss: UInt64 = 0
-            var footprint: UInt64 = 0
-            var cpu: Double = 0
-            var procs: [ProcessRecord] = []
-            var display = ""
-            var isApp = false
-            var iconPath: String?
-        }
-
-        var seenPids = Set<Int32>()
+        var records: [ProcessRecord] = []
+        records.reserveCapacity(Int(count))
         var cpuTimes: [Int32: (user: UInt64, system: UInt64)] = [:]
-        var accumulators: [String: Accumulator] = [:]
+        var ppidByPid: [Int32: Int32] = [:]
+        var pathByPid: [Int32: String] = [:]
+        var seenPids = Set<Int32>()
 
         for pid in pids[0..<Int(count)] where pid > 0 && seenPids.insert(pid).inserted {
             var bsdInfo = proc_bsdinfo()
@@ -121,6 +118,9 @@ final class ProcessMonitor {
                 }
             }
 
+            ppidByPid[pid] = Int32(bitPattern: bsdInfo.pbi_ppid)
+            pathByPid[pid] = path
+
             // CPU fraction of one core from rusage time deltas.
             let userTime = rusage.ri_user_time, systemTime = rusage.ri_system_time
             var cpuFraction = 0.0
@@ -143,10 +143,8 @@ final class ProcessMonitor {
                 }
             }
 
-            let (key, display, isApp) = ProcessTreeAggregator.classify(
-                name: name, path: path, isMCP: isMCP)
-
-            let record = ProcessRecord(
+            let (key, display, _) = ProcessTreeAggregator.classify(name: name, path: path)
+            records.append(ProcessRecord(
                 pid: pid,
                 ppid: Int32(bitPattern: bsdInfo.pbi_ppid),
                 name: name,
@@ -156,26 +154,61 @@ final class ProcessMonitor {
                 cpuFraction: cpuFraction,
                 euid: Int32(bitPattern: bsdInfo.pbi_uid),
                 isStopped: bsdInfo.pbi_status == kSSTOP,
+                isMCP: isMCP,
                 groupKey: key,
-                groupDisplayName: display)
+                groupDisplayName: display))
+        }
 
-            var acc = accumulators[key] ?? Accumulator()
-            acc.rss &+= record.rssBytes
-            acc.footprint &+= record.footprintBytes
-            acc.cpu += record.cpuFraction
-            acc.procs.append(record)
-            if acc.procs.count == 1 {
-                acc.display = display
-                acc.isApp = isApp
-                acc.iconPath = isApp ? ProcessTreeAggregator.appBundlePath(path: path) : nil
+        // Phase 2: adopt name-based groups into their ancestor app.
+        var bundlePathByGroup: [String: String] = [:]
+        for index in records.indices {
+            let record = records[index]
+            if record.groupKey.hasPrefix("app:")
+                || record.groupKey == "sim" || record.groupKey == "codex" {
+                continue
             }
-            accumulators[key] = acc
+            guard let (bundle, bundlePath) = ancestorApp(of: record.pid,
+                                                         ppidByPid: ppidByPid,
+                                                         pathByPid: pathByPid) else { continue }
+            let group = ProcessTreeAggregator.appGroup(forBundle: bundle)
+            bundlePathByGroup[group.key] = bundlePath
+            records[index] = record.reassigned(toGroupKey: group.key,
+                                               displayName: group.display)
         }
 
         // Drop cached state for pids that disappeared.
         let alive = seenPids
         lastCPUTimes = cpuTimes
         mcpFlags = mcpFlags.filter { alive.contains($0.key) }
+
+        // Phase 3: aggregate by group.
+        struct Accumulator {
+            var rss: UInt64 = 0
+            var footprint: UInt64 = 0
+            var cpu: Double = 0
+            var procs: [ProcessRecord] = []
+            var display = ""
+            var isApp = false
+            var iconPath: String?
+        }
+
+        var accumulators: [String: Accumulator] = [:]
+        for record in records {
+            var acc = accumulators[record.groupKey] ?? Accumulator()
+            acc.rss &+= record.rssBytes
+            acc.footprint &+= record.footprintBytes
+            acc.cpu += record.cpuFraction
+            acc.procs.append(record)
+            if acc.procs.count == 1 {
+                let key = record.groupKey
+                acc.display = record.groupDisplayName
+                acc.isApp = key.hasPrefix("app:") || key == "sim" || key == "codex"
+                acc.iconPath = ProcessTreeAggregator.appBundlePath(path: record.path)
+                    ?? bundlePathByGroup[key]
+            }
+            accumulators[record.groupKey] = acc
+        }
+
         groupTrendRings = groupTrendRings.filter { accumulators[$0.key] != nil }
 
         var groups: [ProcessGroupInfo] = []
@@ -201,6 +234,26 @@ final class ProcessMonitor {
             .max { $0.bytesPerMin < $1.bytesPerMin }
 
         onScan?(Output(groups: groups, fastestGrowing: fastest))
+    }
+
+    /// Walks the ppid chain (≤ 12 hops, cycle-safe) looking for an ancestor
+    /// that lives inside an app bundle.
+    private func ancestorApp(of pid: Int32,
+                             ppidByPid: [Int32: Int32],
+                             pathByPid: [Int32: String]) -> (bundle: String, bundlePath: String)? {
+        var current = ppidByPid[pid] ?? 0
+        var depth = 0
+        var visited = Set<Int32>()
+        while current > 0, depth < 12, visited.insert(current).inserted {
+            if let parentPath = pathByPid[current],
+               let bundlePath = ProcessTreeAggregator.appBundlePath(path: parentPath),
+               let bundle = ProcessTreeAggregator.appBundleName(path: parentPath) {
+                return (bundle, bundlePath)
+            }
+            current = ppidByPid[current] ?? 0
+            depth += 1
+        }
+        return nil
     }
 
     // MARK: - Trend
@@ -247,5 +300,15 @@ final class ProcessMonitor {
             offset += 1 // skip NUL
         }
         return args
+    }
+}
+
+private extension ProcessRecord {
+    func reassigned(toGroupKey key: String, displayName: String) -> ProcessRecord {
+        ProcessRecord(
+            pid: pid, ppid: ppid, name: name, path: path,
+            rssBytes: rssBytes, footprintBytes: footprintBytes,
+            cpuFraction: cpuFraction, euid: euid, isStopped: isStopped, isMCP: isMCP,
+            groupKey: key, groupDisplayName: displayName)
     }
 }

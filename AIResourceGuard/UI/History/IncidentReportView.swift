@@ -10,17 +10,17 @@ struct IncidentReportView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text("Incident Report")
+                Text("事件报告")
                     .font(.title3)
                     .fontWeight(.semibold)
                 Spacer()
-                Picker("Range", selection: $rangeHours) {
-                    Text("1h").tag(1)
-                    Text("6h").tag(6)
-                    Text("24h").tag(24)
+                Picker("范围", selection: $rangeHours) {
+                    Text("1 小时").tag(1)
+                    Text("6 小时").tag(6)
+                    Text("24 小时").tag(24)
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 170)
+                .frame(width: 190)
                 .onChange(of: rangeHours) { _ in reload() }
                 Button {
                     reload()
@@ -38,9 +38,9 @@ struct IncidentReportView: View {
                     Image(systemName: "chart.xyaxis.line")
                         .font(.title)
                         .foregroundStyle(.tertiary)
-                    Text("Not enough history yet")
+                    Text("历史数据还不足")
                         .font(.callout)
-                    Text("Snapshots are recorded every 30–120s. Come back after a few minutes — or after the next incident.")
+                    Text("快照每 30–120 秒记录一次。稍等几分钟，或在下一次事件之后再来复盘。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -85,28 +85,28 @@ struct IncidentReportView: View {
     private var fastestGrowingLine: String? {
         let names = snapshots.compactMap(\.fastestGrowing)
         guard let last = names.last else { return nil }
-        return "Last flagged fastest-growing group: \(last)"
+        return "最近标记的增长最快应用：\(last)"
     }
 
     // MARK: - Sections
 
     private var summaryRow: some View {
         HStack(alignment: .top, spacing: 12) {
-            statBlock("Peak Risk", peakRisk.label, color: peakRisk.color)
+            statBlock("峰值风险", peakRisk.label, color: peakRisk.color)
             Divider().frame(height: 34)
-            statBlock("Peak Swap",
+            statBlock("峰值 Swap",
                       peakSwap.map { fmtBytes($0.swapUsedBytes) } ?? "—",
                       caption: peakSwap.map { $0.timestamp.formatted(date: .omitted, time: .shortened) },
                       color: .orange)
             Divider().frame(height: 34)
-            statBlock("Memory at End",
+            statBlock("期末内存",
                       fmtBytes(snapshots.last?.memUsedBytes ?? 0),
                       caption: snapshots.last.map {
-                          "\($0.memTotalBytes > 0 ? Int(Double($0.memUsedBytes) / Double($0.memTotalBytes) * 100) : 0)% of physical"
+                          "\($0.memTotalBytes > 0 ? Int(Double($0.memUsedBytes) / Double($0.memTotalBytes) * 100) : 0)% 物理内存"
                       },
                       color: .accentColor)
             Divider().frame(height: 34)
-            statBlock("Snapshots", "\(snapshots.count)", color: .secondary)
+            statBlock("快照数", "\(snapshots.count)", color: .secondary)
             Spacer()
         }
     }
@@ -140,7 +140,7 @@ struct IncidentReportView: View {
 
     private var offendersSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Heaviest processes in this window")
+            Text("此期间内存最重的应用")
                 .font(.subheadline)
                 .fontWeight(.semibold)
             ForEach(offenders) { peak in
@@ -166,7 +166,7 @@ struct IncidentReportView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardBackground()
+        .glassSurface()
     }
 }
 
@@ -192,9 +192,9 @@ struct RiskTimeline: View {
             }
             .frame(height: 140)
             HStack(spacing: 12) {
-                legendDot(.accentColor, "Memory used")
-                legendDot(.orange, "Swap used")
-                legendDot(peakRiskColor, "Risk band")
+                legendDot(.accentColor, "内存")
+                legendDot(.orange, "Swap")
+                legendDot(peakRiskColor, "风险")
                 Spacer()
                 Text(timeLabel(first))
                     .font(.caption2)
@@ -211,7 +211,7 @@ struct RiskTimeline: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardBackground()
+        .glassSurface()
     }
 
     private var first: Date? { snapshots.first?.timestamp }
