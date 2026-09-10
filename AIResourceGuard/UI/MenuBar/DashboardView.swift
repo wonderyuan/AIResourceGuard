@@ -12,10 +12,11 @@ import SwiftUI
 /// of system hairline dividers. Liquid Glass is reserved for the expanded
 /// app detail (the key interactive area).
 ///
-/// NOTE: no ScrollView at the root — MenuBarExtra windows size themselves
-/// from the content's intrinsic size, and a ScrollView has none (the
-/// popover opens as a 400×10 sliver). Content is bounded by construction:
-/// ≤ 5 app rows, ≤ 12 process rows per expansion.
+/// Sizing is FIXED (Control Center pattern): a MenuBarExtra window that
+/// resizes with its content re-anchors under the icon on every height
+/// change — with per-second data updates and row expansion this reads as
+/// the whole popover "shaking". With a fixed frame the window never
+/// resizes; the app list scrolls internally when an expansion overflows.
 struct DashboardView: View {
     @EnvironmentObject var store: MonitorCenter
 
@@ -26,11 +27,12 @@ struct DashboardView: View {
             MetricsGrid()
             Divider()
             NotableAppsSection()
+            Spacer(minLength: 0)
             Divider()
             FooterView()
         }
         .padding(16)
-        .frame(width: 400)
+        .frame(width: 400, height: 540)
         .onAppear { store.popoverOpened() }
         .onDisappear { store.popoverVisible = false }
     }
@@ -189,10 +191,15 @@ private struct NotableAppsSection: View {
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(store.notableApps) { group in
-                        ProcessGroupRow(group: group)
+                // Sized by the fixed popover frame — expansion scrolls
+                // inside instead of resizing (and re-anchoring) the window.
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(store.notableApps) { group in
+                            ProcessGroupRow(group: group)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }

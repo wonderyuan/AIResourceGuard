@@ -102,7 +102,7 @@ struct ProcessGroupRow: View {
             }
 
             let parentPids = Set(group.processes.map(\.ppid))
-            ForEach(Array(group.processes.prefix(12).enumerated()), id: \.element.pid) { _, proc in
+            ForEach(Array(group.processes.prefix(8).enumerated()), id: \.element.pid) { _, proc in
                 HStack(spacing: 6) {
                     Text("\(proc.pid)")
                         .font(.caption)
@@ -139,8 +139,8 @@ struct ProcessGroupRow: View {
                         .frame(width: 32, alignment: .trailing)
                 }
             }
-            if group.processes.count > 12 {
-                Text("还有 \(group.processes.count - 12) 个进程…")
+            if group.processes.count > 8 {
+                Text("还有 \(group.processes.count - 8) 个进程…")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
