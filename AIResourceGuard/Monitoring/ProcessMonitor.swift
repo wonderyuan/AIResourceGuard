@@ -15,6 +15,8 @@ final class ProcessMonitor {
     struct Output {
         let groups: [ProcessGroupInfo]
         let fastestGrowing: (name: String, bytesPerMin: Double)?
+        /// Attribution confidence for this scan.
+        let stats: ScanStats
     }
 
     var onScan: ((Output) -> Void)?
@@ -26,7 +28,7 @@ final class ProcessMonitor {
 
     private var lastScanAt: Date?
     private var lastCPUTimes: [Int32: (user: UInt64, system: UInt64)] = [:]
-    private var groupTrendRings: [String: [(t: Date, rss: UInt64)]] = [:]
+    private var groupTrendRings: [String: [(t: Date, rss: UInt64, footprint: UInt64)]] = [:]
     private var mcpFlags: [Int32: Bool] = [:]
 
     // Public C-macro constants that Swift cannot import from <libproc.h>/<sys/proc.h>.
@@ -89,6 +91,7 @@ final class ProcessMonitor {
         var ppidByPid: [Int32: Int32] = [:]
         var pathByPid: [Int32: String] = [:]
         var seenPids = Set<Int32>()
+        var rusageReads = 0
 
         for pid in pids[0..<Int(count)] where pid > 0 && seenPids.insert(pid).inserted {
             var bsdInfo = proc_bsdinfo()
@@ -103,6 +106,7 @@ final class ProcessMonitor {
                 }
             }
             guard rusageOK else { continue }
+            rusageReads += 1
 
             var pathBuffer = [CChar](repeating: 0, count: 4096)
             let pathLength = proc_pidpath(pid, &pathBuffer, 4096)
@@ -216,7 +220,7 @@ final class ProcessMonitor {
         groups.reserveCapacity(accumulators.count)
         let nowEpoch = now.timeIntervalSince1970
         for (key, acc) in accumulators {
-            let trend = trend(for: key, now: now, rss: acc.rss)
+            let trend = trends(for: key, now: now, rss: acc.rss, footprint: acc.footprint)
 
             // Orphan/stale dev workload: no live parent app adopted it
             // (name-based group), its heavy processes were reparented to
@@ -232,7 +236,7 @@ final class ProcessMonitor {
                 maxAge = max(maxAge, nowEpoch - proc.startSeconds)
             }
             let isStale = unadopted
-                && acc.rss > 200 * 1_048_576
+                && max(acc.rss, acc.footprint) > 200 * 1_048_576
                 && acc.cpu < 0.5
                 && orphaned
                 && maxAge > 1800
@@ -246,18 +250,21 @@ final class ProcessMonitor {
                 totalFootprint: acc.footprint,
                 cpuFraction: acc.cpu,
                 processes: acc.procs.sorted { $0.rssBytes > $1.rssBytes },
-                trendBytesPerMin: trend,
+                trendBytesPerMin: trend.rssPerMin,
+                footprintTrendBytesPerMin: trend.footprintPerMin,
                 isStaleWorkload: isStale,
                 ageSeconds: maxAge))
         }
         groups.sort { $0.totalRSS > $1.totalRSS }
 
         let fastest = groups
-            .map { (name: $0.displayName, bytesPerMin: $0.trendBytesPerMin) }
+            .map { (name: $0.displayName, bytesPerMin: max($0.footprintTrendBytesPerMin, $0.trendBytesPerMin)) }
             .filter { $0.bytesPerMin > 0 }
             .max { $0.bytesPerMin < $1.bytesPerMin }
 
-        onScan?(Output(groups: groups, fastestGrowing: fastest))
+        onScan?(Output(groups: groups,
+                       fastestGrowing: fastest,
+                       stats: ScanStats(totalPids: Int(count), rusageReads: rusageReads)))
     }
 
     /// Walks the ppid chain (≤ 12 hops, cycle-safe) looking for an ancestor
@@ -282,18 +289,21 @@ final class ProcessMonitor {
 
     // MARK: - Trend
 
-    /// Appends a sample to the group's ring and returns bytes/min across a
-    /// ~5-minute window (0 when fewer than 2 samples or span < 45s).
-    private func trend(for key: String, now: Date, rss: UInt64) -> Double {
+    /// Appends a sample to the group's ring and returns (RSS, footprint)
+    /// bytes/min across a ~5-minute window (0 when span < 45s). Signed
+    /// deltas so shrinkage never wraps UInt64.
+    private func trends(for key: String, now: Date, rss: UInt64, footprint: UInt64)
+        -> (rssPerMin: Double, footprintPerMin: Double) {
         var ring = groupTrendRings[key] ?? []
-        ring.append((now, rss))
+        ring.append((now, rss, footprint))
         ring.removeAll { $0.t < now.addingTimeInterval(-600) }
         groupTrendRings[key] = ring
-        guard let first = ring.first, let last = ring.last, last.t > first.t else { return 0 }
+        guard let first = ring.first, let last = ring.last, last.t > first.t else { return (0, 0) }
         let span = last.t.timeIntervalSince(first.t)
-        guard span >= 45 else { return 0 }
-        // Signed delta: RSS shrinking must not wrap UInt64.
-        return (Double(last.rss) - Double(first.rss)) / span * 60.0
+        guard span >= 45 else { return (0, 0) }
+        let rssRate = (Double(last.rss) - Double(first.rss)) / span * 60.0
+        let fpRate = (Double(last.footprint) - Double(first.footprint)) / span * 60.0
+        return (rssRate, fpRate)
     }
 
     // MARK: - argv

@@ -54,7 +54,7 @@ final class BaselineTracker {
     private(set) var swapUsedMB = MetricStats()
     private(set) var pageoutRate = MetricStats()
     private(set) var decompressionRate = MetricStats()
-    private var groupRSSMB: [String: MetricStats] = [:]
+    private var groupFootprintMB: [String: MetricStats] = [:]
 
     // MARK: - Learning
 
@@ -66,9 +66,9 @@ final class BaselineTracker {
 
     func recordNormalGroups(_ groups: [ProcessGroupInfo]) {
         for group in groups {
-            let mb = Double(group.totalRSS) / 1_048_576
+            let mb = Double(group.totalFootprint) / 1_048_576
             if mb > 50 { // ignore noise from short-lived tiny processes
-                groupRSSMB[group.displayName, default: MetricStats()].add(mb)
+                groupFootprintMB[group.displayName, default: MetricStats()].add(mb)
             }
         }
     }
@@ -78,9 +78,11 @@ final class BaselineTracker {
         for snapshot in snapshots where snapshot.riskLevel == .normal {
             swapUsedMB.add(Double(snapshot.swapUsedBytes) / 1_048_576)
             for entry in snapshot.top {
-                let mb = Double(entry.rssBytes) / 1_048_576
+                // Prefer footprint; fall back to RSS for rows written before
+                // footprint tracking existed.
+                let mb = Double(entry.footprintBytes > 0 ? entry.footprintBytes : entry.rssBytes) / 1_048_576
                 if mb > 50 {
-                    groupRSSMB[entry.name, default: MetricStats()].add(mb)
+                    groupFootprintMB[entry.name, default: MetricStats()].add(mb)
                 }
             }
         }
@@ -88,9 +90,18 @@ final class BaselineTracker {
 
     // MARK: - Queries
 
-    func groupMeanRSSMB(displayName: String) -> Double? {
-        guard let stats = groupRSSMB[displayName], stats.isReady else { return nil }
+    func groupMeanFootprintMB(displayName: String) -> Double? {
+        guard let stats = groupFootprintMB[displayName], stats.isReady else { return nil }
         return stats.mean
+    }
+
+    /// How far a group's current footprint sits above its learned normal,
+    /// in MB (nil when the baseline is not ready for this group).
+    func groupFootprintExcessMB(displayName: String, currentMB: Double) -> Double? {
+        guard let stats = groupFootprintMB[displayName], stats.isReady else { return nil }
+        let excess = currentMB - stats.mean
+        let floor = max(1024.0, 2 * stats.stddev)
+        return excess > floor ? excess : nil
     }
 
     /// Builds the machine-relative context for one risk evaluation.
@@ -106,8 +117,8 @@ final class BaselineTracker {
 
         var deviations: [(String, Double, Double)] = []
         for group in groups {
-            guard let stats = groupRSSMB[group.displayName], stats.isReady else { continue }
-            let current = Double(group.totalRSS) / 1_048_576
+            guard let stats = groupFootprintMB[group.displayName], stats.isReady else { continue }
+            let current = Double(group.totalFootprint) / 1_048_576
             let excess = current - stats.mean
             let floor = max(1024.0, 2 * stats.stddev)
             if excess > floor {

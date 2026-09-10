@@ -16,13 +16,13 @@ import Foundation
 enum RescueScorer {
     static func score(group: ProcessGroupInfo,
                       isForeground: Bool,
-                      baselineMeanRSSMB: Double?) -> Double {
-        let rssMB = Double(group.totalRSS) / 1_048_576
+                      baselineMeanFootprintMB: Double?) -> Double {
+        let footprintMB = Double(group.totalFootprint) / 1_048_576
 
-        var score = log2(rssMB / 200 + 1) // 200MB→1.0, 1GB→2.3, 4GB→3.4, 12GB→4.6
+        var score = log2(footprintMB / 200 + 1) // 200MB→1.0, 1GB→2.3, 4GB→3.4, 12GB→4.6
 
         if group.isRiskSource { score += 1.2 }
-        if let baseline = baselineMeanRSSMB, baseline > 50, rssMB > baseline + 1024 {
+        if let baseline = baselineMeanFootprintMB, baseline > 50, footprintMB > baseline + 1024 {
             score += 0.8
         }
         if group.isStaleWorkload { score += 1.5 }

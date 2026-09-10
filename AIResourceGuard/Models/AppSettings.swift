@@ -23,6 +23,38 @@ struct ThresholdConfig: Codable, Equatable {
     /// consecutive resumes.
     var recoveryWindowSeconds: Double = 60
     var recoveryObserveSeconds: Double = 45
+    /// Which preset the current values correspond to (custom once edited).
+    var sensitivity: Sensitivity = .recommended
+
+    /// The named preset values.
+    static func preset(_ sensitivity: Sensitivity) -> ThresholdConfig? {
+        switch sensitivity {
+        case .recommended:
+            return ThresholdConfig()
+        case .relaxed:
+            var t = ThresholdConfig()
+            t.warningScore = 0.45; t.dangerScore = 0.68; t.criticalScore = 0.9
+            t.deescalationMargin = 0.15
+            t.sustainWarningSeconds = 20; t.sustainDangerSeconds = 15; t.sustainCriticalSeconds = 10
+            t.deescalateSeconds = 45; t.notifyCooldownSeconds = 180
+            t.swapWarnMB = 3072; t.swapDangerMB = 7680; t.swapCriticalMB = 12288
+            t.swapRateWarnMBPerMin = 225; t.swapRateDangerMBPerMin = 600; t.swapRateCriticalMBPerMin = 1200
+            t.recoveryWindowSeconds = 90; t.recoveryObserveSeconds = 60
+            return t
+        case .sensitive:
+            var t = ThresholdConfig()
+            t.warningScore = 0.28; t.dangerScore = 0.52; t.criticalScore = 0.8
+            t.deescalationMargin = 0.10
+            t.sustainWarningSeconds = 8; t.sustainDangerSeconds = 6; t.sustainCriticalSeconds = 4
+            t.deescalateSeconds = 20; t.notifyCooldownSeconds = 90
+            t.swapWarnMB = 1536; t.swapDangerMB = 4096; t.swapCriticalMB = 8192
+            t.swapRateWarnMBPerMin = 100; t.swapRateDangerMBPerMin = 300; t.swapRateCriticalMBPerMin = 600
+            t.recoveryWindowSeconds = 40; t.recoveryObserveSeconds = 30
+            return t
+        case .custom:
+            return nil
+        }
+    }
 
     // Fields added after v1 default to their current values when decoding
     // settings persisted by an older build.
@@ -47,6 +79,26 @@ struct ThresholdConfig: Codable, Equatable {
         swapRateCriticalMBPerMin = try c.decodeIfPresent(Double.self, forKey: .swapRateCriticalMBPerMin) ?? 800
         recoveryWindowSeconds = try c.decodeIfPresent(Double.self, forKey: .recoveryWindowSeconds) ?? 60
         recoveryObserveSeconds = try c.decodeIfPresent(Double.self, forKey: .recoveryObserveSeconds) ?? 45
+        sensitivity = try c.decodeIfPresent(Sensitivity.self, forKey: .sensitivity) ?? .recommended
+    }
+}
+
+/// Coarse protection sensitivity; "高级设置" edits map to .custom.
+enum Sensitivity: String, Codable, CaseIterable, Identifiable {
+    case relaxed
+    case recommended
+    case sensitive
+    case custom
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .relaxed: return "宽松"
+        case .recommended: return "推荐"
+        case .sensitive: return "灵敏"
+        case .custom: return "自定义"
+        }
     }
 }
 
@@ -76,6 +128,8 @@ struct ManagedAppConfig: Codable, Equatable, Identifiable {
     var displayName: String
     var allowAutoPause = false
     var allowEmergencyTerminate = false
+    /// Bundle path for the app icon (nil until the app has been seen).
+    var iconPath: String? = nil
 
     var id: String { key }
 

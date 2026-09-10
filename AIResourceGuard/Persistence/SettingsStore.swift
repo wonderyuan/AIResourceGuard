@@ -40,9 +40,15 @@ final class SettingsStore: ObservableObject {
         settings.protectedApps.contains(key)
     }
 
-    func addManaged(key: String, displayName: String) {
-        guard !settings.managedApps.contains(where: { $0.key == key }) else { return }
-        settings.managedApps.append(ManagedAppConfig(key: key, displayName: displayName))
+    func addManaged(key: String, displayName: String, iconPath: String? = nil) {
+        if let index = settings.managedApps.firstIndex(where: { $0.key == key }) {
+            if let iconPath, settings.managedApps[index].iconPath == nil {
+                settings.managedApps[index].iconPath = iconPath
+            }
+            return
+        }
+        settings.managedApps.append(
+            ManagedAppConfig(key: key, displayName: displayName, iconPath: iconPath))
     }
 
     func removeManaged(key: String) {

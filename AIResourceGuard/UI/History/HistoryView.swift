@@ -1,78 +1,136 @@
 import SwiftUI
 
-/// Event history browser (Settings ▸ History). Answers the post-mortem
-/// question: "which process dragged the machine down, and when".
-struct HistoryView: View {
+/// Settings ▸ 历史记录 — organized around pressure episodes, with the raw
+/// event stream below for completeness.
+struct HistoryPage: View {
+    @State private var episodes: [PressureEpisode] = []
     @State private var events: [HistoryEvent] = []
-    @State private var snapshots: [HistorySnapshot] = []
+    @State private var expandedEpisode: PressureEpisode.ID?
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("\(events.count) 条事件（最近 24 小时，最多 1000 条）")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    reload()
-                } label: {
-                    Label("刷新", systemImage: "arrow.clockwise")
-                }
-                Button {
-                    HistoryStore.shared.clear()
-                    events = []
-                    snapshots = []
-                } label: {
-                    Label("清空", systemImage: "trash")
+        List {
+            Section("压力事件") {
+                if episodes.isEmpty {
+                    Text("最近 24 小时没有压力事件。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(episodes) { episode in
+                        EpisodeRow(episode: episode,
+                                   expanded: expandedEpisode == episode.id) {
+                            expandedEpisode = expandedEpisode == episode.id ? nil : episode.id
+                        }
+                    }
                 }
             }
-            .padding(8)
 
-            Divider()
-
-            if events.isEmpty && snapshots.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.title2)
-                        .foregroundStyle(.tertiary)
+            Section("全部事件") {
+                if events.isEmpty {
                     Text("暂无事件")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    if snapshots.count >= 2 {
-                        Section {
-                            RiskTimeline(snapshots: snapshots)
-                                .listRowSeparator(.hidden)
-                        } header: {
-                            Text("最近 6 小时 — 内存 / Swap / 风险")
-                        }
-                    }
-                    Section("事件列表") {
-                        ForEach(events) { event in
-                            HistoryEventRow(event: event)
-                        }
+                } else {
+                    ForEach(events) { event in
+                        HistoryEventRow(event: event)
                     }
                 }
-                .listStyle(.inset)
             }
         }
         .onAppear { reload() }
     }
 
     private func reload() {
-        HistoryStore.shared.recentEvents(limit: 500) { events in
-            self.events = events
-        }
-        HistoryStore.shared.fetchSnapshots(hours: 6) { snapshots in
-            self.snapshots = snapshots
+        HistoryStore.shared.fetchSnapshots(hours: 24) { snapshots in
+            HistoryStore.shared.recentEvents(limit: 500) { events in
+                self.events = events
+                self.episodes = EpisodeBuilder.build(snapshots: snapshots, events: events)
+            }
         }
     }
 }
 
-private struct HistoryEventRow: View {
+/// One pressure episode, summarized: when, how bad, who, what was done.
+private struct EpisodeRow: View {
+    let episode: PressureEpisode
+    let expanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: toggle) {
+                HStack(spacing: 8) {
+                    Circle().fill(episode.peakRisk.color).frame(width: 7, height: 7)
+                    Text(timeRange).font(.callout).monospacedDigit()
+                    Text("峰值 \(episode.peakRisk.label)")
+                        .font(.caption)
+                        .foregroundStyle(episode.peakRisk.color)
+                    Text("Swap \(fmtBytes(episode.startSwapBytes)) → \(fmtBytes(episode.peakSwapBytes))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if let suspect = episode.primarySuspect {
+                        Text(suspect.name)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    detailRow("持续时间", durationText)
+                    detailRow("峰值增速", String(format: "%.0f MB/分钟", episode.maxSwapRateBytesPerMin / 1_048_576))
+                    if let suspect = episode.primarySuspect {
+                        detailRow("主要嫌疑", "\(suspect.name)（+\(fmtBytes(suspect.growthBytes))）")
+                    }
+                    detailRow("恢复时间", episode.endedAt.map {
+                        $0.formatted(date: .omitted, time: .shortened)
+                    } ?? "进行中")
+                    if !episode.actions.isEmpty {
+                        ForEach(episode.actions.prefix(5)) { action in
+                            Label(action.summary, systemImage: "hand.raised")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("期间未执行保护动作")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.leading, 15)
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var timeRange: String {
+        let start = episode.startedAt.formatted(date: .omitted, time: .shortened)
+        let end = episode.endedAt.map { $0.formatted(date: .omitted, time: .shortened) } ?? "…"
+        return "\(start) – \(end)"
+    }
+
+    private var durationText: String {
+        let minutes = Int(episode.durationSeconds / 60)
+        return minutes > 0 ? "约 \(minutes) 分钟" : "\(Int(episode.durationSeconds)) 秒"
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title).font(.caption).foregroundStyle(.tertiary)
+            Spacer()
+            Text(value).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct HistoryEventRow: View {
     let event: HistoryEvent
     @State private var expanded = false
 

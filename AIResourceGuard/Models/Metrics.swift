@@ -123,27 +123,48 @@ struct ProcessGroupInfo: Identifiable {
     let isApp: Bool
     let iconPath: String?
     let totalRSS: UInt64
+    /// Physical footprint is the PRIMARY attribution metric on macOS — it is
+    /// what the memory manager actually charges a process (compressed pages
+    /// included), while RSS under-reports compressed/swap-heavy workloads.
     let totalFootprint: UInt64
     let cpuFraction: Double
     let processes: [ProcessRecord]
-    /// Bytes per minute across a ~5-minute window (0 when window is too short).
+    /// RSS growth, bytes/min across a ~5-minute window (0 when too short).
     let trendBytesPerMin: Double
+    /// Footprint growth over the same window — the main "runaway" signal.
+    var footprintTrendBytesPerMin: Double = 0
     /// Suspected orphaned/stale dev workload: no live parent app, old,
     /// idle-but-heavy (node/MCP/java/xcodebuild… left behind by a finished
     /// task). Prime cleanup target.
-    let isStaleWorkload: Bool
+    var isStaleWorkload: Bool = false
     /// Age of the oldest member process, seconds (0 when unknown).
-    let ageSeconds: TimeInterval
+    var ageSeconds: TimeInterval = 0
 
     var id: String { key }
 
     /// A "risk source" is a group that is actively growing, not merely big:
     /// stable large processes are normal residents; runaway growth is what
-    /// drags a 16 GB machine down.
-    var isRiskSource: Bool { trendBytesPerMin > 50 * 1_048_576 }
+    /// drags a 16 GB machine down. Footprint growth decides; RSS growth is
+    /// a fallback signal for the rare case footprint stays flat.
+    var isRiskSource: Bool {
+        footprintTrendBytesPerMin > 50 * 1_048_576
+            || trendBytesPerMin > 80 * 1_048_576
+    }
+
+    /// The memory number users should see first.
+    var displayMemoryBytes: UInt64 { max(totalFootprint, totalRSS) }
+
+    /// Majority of member processes owned by the console user (vs root
+    /// daemons) — used when falling back to "biggest visible apps".
+    var isUserOwned: Bool {
+        guard !processes.isEmpty else { return true }
+        let uid = getuid()
+        let owned = processes.filter { $0.euid == Int32(uid) }.count
+        return owned * 2 >= processes.count
+    }
 
     var trendDirection: TrendDirection {
-        let mb = trendBytesPerMin / 1_048_576
+        let mb = footprintTrendBytesPerMin / 1_048_576
         if mb > 50 { return .up }
         if mb < -50 { return .down }
         return .flat
@@ -190,6 +211,18 @@ struct RiskAssessment {
         reasons: [], dominantReason: nil,
         justEscalated: false, justDeescalated: false, shouldNotify: false,
         levelAgeSeconds: 0)
+}
+
+/// Attribution confidence for one process scan: how much of the process
+/// table could actually be read and attributed.
+struct ScanStats {
+    /// Processes returned by proc_listallpids.
+    let totalPids: Int
+    /// Processes whose rusage was read successfully.
+    let rusageReads: Int
+    /// The rest — invisible to memory attribution (mostly root-owned).
+    var rusageFailures: Int { max(0, totalPids - rusageReads) }
+    var failureRatio: Double { totalPids > 0 ? Double(rusageFailures) / Double(totalPids) : 0 }
 }
 
 // MARK: - Formatting

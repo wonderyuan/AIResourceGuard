@@ -57,8 +57,12 @@ App
 │   └── ProcessTreeAggregator pure grouping rules (app bundles, toolchain,
 │                             node/bun→MCP via KERN_PROCARGS2 argv)
 ├── Monitoring
+│   ├── AttributionEngine     pure: notable-app curation (level-aware, never
+│   │                         empty at Danger+), pressure-source classification
+│   │                         (single runaway / widespread / thrashing / legacy
+│   │                         / build burst / incomplete), attribution coverage
 │   ├── BaselineTracker       machine-relative EWMA baselines (swap/page-out/
-│   │                         decompression/group RSS), bootstrapped from history
+│   │                         decompression/group footprint), bootstrapped from history
 ├── Protection
 │   ├── RiskEngine            pure scoring + hysteresis state machine (unit-tested);
 │   │                         fixed thresholds × baseline-deviation signals
@@ -67,6 +71,8 @@ App
 │   │                         frontmost app strongly protected (unit-tested)
 │   ├── RecoveryPlanner       staged resume state machine (unit-tested)
 │   ├── IncidentSummarizer    rule-based post-mortem narrative (unit-tested)
+│   ├── EpisodeBuilder        derives complete pressure episodes (peaks,
+│   │                         suspects, actions, recovery) from history
 │   └── ProtectionController  SIGSTOP/SIGCONT/SIGTERM (+SIGKILL last resort),
 │                             rescue-scored targets, staged recovery, exit safety
 ├── Models                    SystemSample / ProcessRecord / ProcessGroupInfo /
@@ -87,6 +93,27 @@ App
     ├── IncidentReportView    post-mortem window: stats / RiskTimeline / offenders
     └── SettingsView          General / Managed / Protected / Thresholds / History
 ```
+
+## Attribution model
+
+Physical footprint (`ri_phys_footprint`) is the primary metric for memory
+attribution — it is what the memory manager charges a process (compressed
+pages included); RSS under-reports compressed/swap-heavy workloads and is
+kept only as an auxiliary signal. Every group tracks footprint + growth,
+RSS + growth, baseline deviation, CPU and stale/orphan state.
+
+Notable-app curation is level-aware:
+- Normal — only genuine risk sources (growing / deviating / stale);
+- Warning — risk sources first, then deviating groups, then large consumers;
+- Danger/Critical — the list is never empty: falls back to the largest
+  user-owned apps by footprint and says so ("暂未定位到单一主要来源").
+Attribution confidence (proc_listallpids total vs rusage reads vs
+attributable footprint share) powers the "部分进程无法归因" notice.
+
+Reporting is episode-centric: `EpisodeBuilder` splits history into
+Normal → elevated → recovery episodes (start, peaks, suspects, actions,
+recovery), and both the incident report and history present episodes
+rather than raw snapshot streams.
 
 ## Data flow
 

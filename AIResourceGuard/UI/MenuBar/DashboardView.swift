@@ -80,13 +80,23 @@ private struct StatusView: View {
     @EnvironmentObject var store: MonitorCenter
 
     var body: some View {
+        let level = store.assessment.level
         VStack(alignment: .leading, spacing: 5) {
             Text(store.assessment.headline)
-                .font(.callout)
-                .foregroundStyle(store.assessment.level == .normal ? .secondary : .primary)
+                .font(level == .critical ? .system(.body, design: .rounded).weight(.semibold)
+                                          : .callout)
+                .foregroundStyle(level == .normal ? .secondary : .primary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if store.assessment.level >= .warning {
+            if level >= .warning {
+                HStack(spacing: 4) {
+                    Image(systemName: store.notableContext.source.symbol)
+                        .font(.caption2)
+                    Text(sourceText)
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+
                 let rest = store.assessment.reasons.prefix(2)
                 if !rest.isEmpty {
                     Text(rest.joined(separator: " · "))
@@ -97,6 +107,12 @@ private struct StatusView: View {
                 }
             }
 
+            if store.notableContext.attributionIncomplete && level >= .danger {
+                Label("系统压力严重，但部分进程无法归因", systemImage: "eye.slash")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
             if let latest = store.actionFeedback.first,
                Date().timeIntervalSince(latest.date) < 600 {
                 Label(latest.text, systemImage: "checkmark.shield")
@@ -105,6 +121,15 @@ private struct StatusView: View {
                     .lineLimit(1)
             }
         }
+    }
+
+    private var sourceText: String {
+        let source = store.notableContext.source
+        guard source != .none else { return "" }
+        if case .singleRunaway(let name) = source {
+            return "压力来源：单一失控进程 · \(name)"
+        }
+        return "压力来源：\(source.label)"
     }
 }
 
@@ -120,7 +145,8 @@ private struct MetricsGrid: View {
                            value: fmtBytes(sample.usedBytes),
                            sub: "/ \(fmtBytes(sample.physicalTotalBytes))")
                 metricCell(label: "Swap",
-                           value: sample.swapUsedBytes > 0 ? fmtBytes(sample.swapUsedBytes) : "未使用")
+                           value: sample.swapUsedBytes > 0 ? fmtBytes(sample.swapUsedBytes) : "未使用",
+                           color: swapColor(sample))
                 metricCell(label: "内存压力",
                            value: store.pressureLevel.label,
                            color: store.pressureLevel.color)
@@ -134,6 +160,13 @@ private struct MetricsGrid: View {
                     .frame(maxWidth: .infinity)
             }
         }
+    }
+
+    private func swapColor(_ sample: SystemSample) -> Color? {
+        let mb = Double(sample.swapUsedBytes) / 1_048_576
+        if store.assessment.level >= .danger && mb > 8192 { return .red }
+        if store.assessment.level >= .warning && mb > 6144 { return .orange }
+        return nil
     }
 
     private func trendText(_ sample: SystemSample) -> String {
@@ -186,11 +219,16 @@ private struct NotableAppsSection: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             if store.notableApps.isEmpty {
-                Text(store.groups.isEmpty ? "正在扫描…" : "当前没有需要关注的应用")
+                Text(emptyMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
             } else {
+                if store.notableContext.fallbackOnly {
+                    Text("暂未定位到单一主要来源，以下为当前占用最高的应用")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 // Sized by the fixed popover frame — expansion scrolls
                 // inside instead of resizing (and re-anchoring) the window.
                 ScrollView {
@@ -203,6 +241,16 @@ private struct NotableAppsSection: View {
                 }
             }
         }
+    }
+
+    private var emptyMessage: String {
+        if store.groups.isEmpty { return "正在扫描…" }
+        if store.assessment.level >= .danger {
+            return store.notableContext.attributionIncomplete
+                ? "系统压力严重，但部分进程无法归因"
+                : "暂未定位到单一主要来源"
+        }
+        return "当前没有需要关注的应用"
     }
 }
 

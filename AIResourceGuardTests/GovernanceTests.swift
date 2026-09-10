@@ -35,7 +35,7 @@ final class BaselineTrackerTests: XCTestCase {
                                        groups: [group(name: "ZCode", rssMB: 2400)])
         XCTAssertEqual(context.deviatingGroups.count, 1)
         XCTAssertEqual(context.deviatingGroups.first?.name, "ZCode")
-        XCTAssertEqual(tracker.groupMeanRSSMB(displayName: "ZCode") ?? 0, 500, accuracy: 50)
+        XCTAssertEqual(tracker.groupMeanFootprintMB(displayName: "ZCode") ?? 0, 500, accuracy: 50)
     }
 
     func testBootstrapIgnoresAbnormalSnapshots() {
@@ -63,7 +63,8 @@ final class BaselineTrackerTests: XCTestCase {
 
     private func group(name: String, rssMB: Double) -> ProcessGroupInfo {
         ProcessGroupInfo(key: "exe:\(name)", displayName: name, isApp: false, iconPath: nil,
-                         totalRSS: UInt64(rssMB * 1_048_576), totalFootprint: 0, cpuFraction: 0,
+                         totalRSS: UInt64(rssMB * 1_048_576),
+                         totalFootprint: UInt64(rssMB * 1_048_576), cpuFraction: 0,
                          processes: [], trendBytesPerMin: 0,
                          isStaleWorkload: false, ageSeconds: 0)
     }
@@ -86,16 +87,19 @@ final class RescueScorerTests: XCTestCase {
                        isApp: Bool = true, stale: Bool = false) -> ProcessGroupInfo {
         ProcessGroupInfo(key: isApp ? "app:\(name)" : "exe:\(name)", displayName: name,
                          isApp: isApp, iconPath: nil,
-                         totalRSS: UInt64(rssMB * 1_048_576), totalFootprint: 0, cpuFraction: 0,
-                         processes: [], trendBytesPerMin: trendMBPerMin * 1_048_576,
+                         totalRSS: UInt64(rssMB * 1_048_576),
+                         totalFootprint: UInt64(rssMB * 1_048_576), cpuFraction: 0,
+                         processes: [],
+                         trendBytesPerMin: 0,
+                         footprintTrendBytesPerMin: trendMBPerMin * 1_048_576,
                          isStaleWorkload: stale, ageSeconds: stale ? 5400 : 0)
     }
 
     func testForegroundAppIsStronglyProtected() {
         let background = group(name: "node 构建任务", rssMB: 1200, isApp: false)
         let foreground = group(name: "Chrome", rssMB: 4000)
-        let backgroundScore = RescueScorer.score(group: background, isForeground: false, baselineMeanRSSMB: nil)
-        let foregroundScore = RescueScorer.score(group: foreground, isForeground: true, baselineMeanRSSMB: nil)
+        let backgroundScore = RescueScorer.score(group: background, isForeground: false, baselineMeanFootprintMB: nil)
+        let foregroundScore = RescueScorer.score(group: foreground, isForeground: true, baselineMeanFootprintMB: nil)
         XCTAssertGreaterThan(backgroundScore, foregroundScore)
     }
 
@@ -103,19 +107,19 @@ final class RescueScorerTests: XCTestCase {
         let stale = group(name: "gradle", rssMB: 2000, isApp: false, stale: true)
         let stable = group(name: "Lark", rssMB: 2000)
         XCTAssertGreaterThan(
-            RescueScorer.score(group: stale, isForeground: false, baselineMeanRSSMB: nil),
-            RescueScorer.score(group: stable, isForeground: false, baselineMeanRSSMB: nil))
+            RescueScorer.score(group: stale, isForeground: false, baselineMeanFootprintMB: nil),
+            RescueScorer.score(group: stable, isForeground: false, baselineMeanFootprintMB: nil))
     }
 
     func testGrowthAndBaselineDeviationAddScore() {
         let plain = group(name: "A", rssMB: 2000)
         let growing = group(name: "B", rssMB: 2000, trendMBPerMin: 300)
         let aboveBaseline = group(name: "C", rssMB: 2000)
-        let base = RescueScorer.score(group: plain, isForeground: false, baselineMeanRSSMB: nil)
+        let base = RescueScorer.score(group: plain, isForeground: false, baselineMeanFootprintMB: nil)
         XCTAssertGreaterThan(
-            RescueScorer.score(group: growing, isForeground: false, baselineMeanRSSMB: nil), base)
+            RescueScorer.score(group: growing, isForeground: false, baselineMeanFootprintMB: nil), base)
         XCTAssertGreaterThan(
-            RescueScorer.score(group: aboveBaseline, isForeground: false, baselineMeanRSSMB: 300), base)
+            RescueScorer.score(group: aboveBaseline, isForeground: false, baselineMeanFootprintMB: 300), base)
     }
 }
 

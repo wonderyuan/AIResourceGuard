@@ -1,13 +1,17 @@
 import SwiftUI
 
-/// Post-mortem report: what dragged the machine down, and when.
-/// Rebuilt from history snapshots — works even after a hard lockup.
+/// Post-mortem report, organized around pressure episodes: pick an episode,
+/// read its narrative, timeline, suspects and the protection actions taken.
+/// Episodes are derived from persisted history, so the story survives even
+/// a hard lockup.
 struct IncidentReportView: View {
     @EnvironmentObject var store: MonitorCenter
-    @State private var snapshots: [HistorySnapshot] = []
+    @State private var episodes: [PressureEpisode] = []
+    @State private var selectedID: PressureEpisode.ID?
+    @State private var allSnapshots: [HistorySnapshot] = []
     @State private var events: [HistoryEvent] = []
+    @State private var windowSnapshots: [HistorySnapshot] = []
     @State private var summary: [String] = []
-    @State private var rangeHours = 6
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,14 +20,6 @@ struct IncidentReportView: View {
                     .font(.title3)
                     .fontWeight(.semibold)
                 Spacer()
-                Picker("范围", selection: $rangeHours) {
-                    Text("1 小时").tag(1)
-                    Text("6 小时").tag(6)
-                    Text("24 小时").tag(24)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 190)
-                .onChange(of: rangeHours) { _ in reload() }
                 Button {
                     reload()
                 } label: {
@@ -35,111 +31,155 @@ struct IncidentReportView: View {
 
             Divider()
 
-            if snapshots.count < 2 {
+            if episodes.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "chart.xyaxis.line")
                         .font(.title)
                         .foregroundStyle(.tertiary)
-                    Text("历史数据还不足")
+                    Text("最近 24 小时没有压力事件")
                         .font(.callout)
-                    Text("快照每 30–120 秒记录一次。稍等几分钟，或在下一次事件之后再来复盘。")
+                    Text("快照每 30–120 秒记录一次；下一次事件之后，这里会有完整的时间线与归因。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if !summary.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Label("事故摘要", systemImage: "text.alignleft")
-                                    .font(.caption)
-                                    .foregroundStyle(.tertiary)
-                                ForEach(summary.indices, id: \.self) { index in
-                                    Text(summary[index])
-                                        .font(.callout)
-                                        .foregroundStyle(
-                                            index == summary.count - 1 ? .primary : .secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
+                VStack(spacing: 0) {
+                    episodeChips
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+
+                    Divider()
+
+                    if let episode = selected {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 14) {
+                                summarySection(episode)
+                                statsRow(episode)
+                                RiskTimeline(snapshots: windowSnapshots)
+                                suspectsSection(episode)
+                                actionsSection(episode)
                             }
                             .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .glassSurface()
-                        }
-                        summaryRow
-                        RiskTimeline(snapshots: snapshots)
-                        offendersSection
-                        if let fastest = fastestGrowingLine {
-                            Label(fastest, systemImage: "arrow.up.right")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(12)
                 }
             }
         }
-        .frame(minWidth: 680, minHeight: 480)
+        .frame(minWidth: 720, minHeight: 520)
         .onAppear { reload() }
     }
 
     // MARK: - Data
 
+    private var selected: PressureEpisode? {
+        episodes.first { $0.id == selectedID } ?? episodes.first
+    }
+
     private func reload() {
-        HistoryStore.shared.fetchSnapshots(hours: TimeInterval(rangeHours)) { snaps in
-            self.snapshots = snaps
-            recomputeSummary()
-        }
-        HistoryStore.shared.recentEvents(limit: 500) { events in
-            self.events = events
-            recomputeSummary()
+        HistoryStore.shared.fetchSnapshots(hours: 24) { snapshots in
+            self.allSnapshots = snapshots
+            HistoryStore.shared.recentEvents(limit: 500) { events in
+                self.events = events
+                self.episodes = EpisodeBuilder.build(snapshots: snapshots, events: events)
+                if selectedID == nil { selectedID = episodes.first?.id }
+                applySelection()
+            }
         }
     }
 
-    private func recomputeSummary() {
-        guard let windowStart = snapshots.first?.timestamp else {
+    /// Snapshots + narrative for one episode window (with a small lead-in so
+    /// growth has a "before" to compare against).
+    private func applySelection() {
+        guard let episode = selected else {
+            windowSnapshots = []
             summary = []
             return
         }
-        let windowEvents = events.filter { $0.timestamp >= windowStart }
-        summary = IncidentSummarizer.summarize(snapshots: snapshots, events: windowEvents)
+        let start = episode.startedAt.addingTimeInterval(-20 * 60)
+        let end = (episode.endedAt ?? Date()).addingTimeInterval(5 * 60)
+        windowSnapshots = allSnapshots.filter {
+            $0.timestamp >= start && $0.timestamp <= end
+        }
+        let windowEvents = events.filter {
+            $0.timestamp >= start && $0.timestamp <= end
+        }
+        summary = IncidentSummarizer.summarize(snapshots: windowSnapshots, events: windowEvents)
     }
 
-    private var peakRisk: RiskLevel {
-        snapshots.map(\.riskLevel).max() ?? .normal
-    }
+    // MARK: - Episode chips
 
-    private var peakSwap: HistorySnapshot? {
-        snapshots.max { $0.swapUsedBytes < $1.swapUsedBytes }
-    }
-
-    private var fastestGrowingLine: String? {
-        let names = snapshots.compactMap(\.fastestGrowing)
-        guard let last = names.last else { return nil }
-        return "最近标记的增长最快应用：\(last)"
+    private var episodeChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(episodes) { episode in
+                    Button {
+                        selectedID = episode.id
+                        applySelection()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(episode.peakRisk.color)
+                                .frame(width: 6, height: 6)
+                            Text(episode.startedAt.formatted(date: .omitted, time: .shortened))
+                                .font(.caption)
+                                .monospacedDigit()
+                            Text(episode.peakRisk.label)
+                                .font(.caption)
+                                .foregroundStyle(episode.peakRisk.color)
+                            if episode.endedAt == nil {
+                                Text("进行中")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            episode.id == selected?.id
+                                ? AnyShapeStyle(Color.accentColor.opacity(0.15))
+                                : AnyShapeStyle(Color(nsColor: .quaternaryLabelColor)),
+                            in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
     }
 
     // MARK: - Sections
 
-    private var summaryRow: some View {
+    private func summarySection(_ episode: PressureEpisode) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("事故摘要", systemImage: "text.alignleft")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            ForEach(summary.indices, id: \.self) { index in
+                Text(summary[index])
+                    .font(.callout)
+                    .foregroundStyle(index == summary.count - 1 ? .primary : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassSurface()
+    }
+
+    private func statsRow(_ episode: PressureEpisode) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            statBlock("峰值风险", peakRisk.label, color: peakRisk.color)
+            statBlock("峰值风险", episode.peakRisk.label, color: episode.peakRisk.color)
             Divider().frame(height: 34)
-            statBlock("峰值 Swap",
-                      peakSwap.map { fmtBytes($0.swapUsedBytes) } ?? "—",
-                      caption: peakSwap.map { $0.timestamp.formatted(date: .omitted, time: .shortened) },
+            statBlock("峰值 Swap", fmtBytes(episode.peakSwapBytes),
+                      caption: episode.peakSwapAt.formatted(date: .omitted, time: .shortened),
                       color: .orange)
             Divider().frame(height: 34)
-            statBlock("期末内存",
-                      fmtBytes(snapshots.last?.memUsedBytes ?? 0),
-                      caption: snapshots.last.map {
-                          "\($0.memTotalBytes > 0 ? Int(Double($0.memUsedBytes) / Double($0.memTotalBytes) * 100) : 0)% 物理内存"
-                      },
-                      color: .accentColor)
+            statBlock("峰值增速",
+                      String(format: "%.0f MB/分钟", episode.maxSwapRateBytesPerMin / 1_048_576),
+                      color: .secondary)
             Divider().frame(height: 34)
-            statBlock("快照数", "\(snapshots.count)", color: .secondary)
+            statBlock("持续", durationText(episode), color: .secondary)
             Spacer()
         }
     }
@@ -155,44 +195,36 @@ struct IncidentReportView: View {
         }
     }
 
-    private var offenders: [GroupPeak] {
-        var peaks: [String: GroupPeak] = [:]
-        for snapshot in snapshots {
-            for entry in snapshot.top {
-                if peaks[entry.name] == nil || peaks[entry.name]!.peakRSSBytes < entry.rssBytes {
-                    peaks[entry.name] = GroupPeak(
-                        name: entry.name,
-                        peakRSSBytes: entry.rssBytes,
-                        at: snapshot.timestamp,
-                        trendBytesPerMin: entry.trendBytesPerMin)
-                }
-            }
-        }
-        return peaks.values.sorted { $0.peakRSSBytes > $1.peakRSSBytes }.prefix(6).map { $0 }
+    private func durationText(_ episode: PressureEpisode) -> String {
+        let minutes = Int(episode.durationSeconds / 60)
+        return minutes > 0 ? "\(minutes) 分钟" : "\(Int(episode.durationSeconds)) 秒"
     }
 
-    private var offendersSection: some View {
+    private func suspectsSection(_ episode: PressureEpisode) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("此期间内存最重的应用")
+            Text("异常增长的应用")
                 .font(.subheadline)
                 .fontWeight(.semibold)
-            ForEach(offenders) { peak in
+            if episode.suspects.isEmpty {
+                Text("期间没有发现显著增长的应用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(episode.suspects) { suspect in
                 HStack(spacing: 8) {
-                    Text(peak.name)
-                        .font(.callout)
-                        .lineLimit(1)
-                    if abs(peak.trendBytesPerMin) > 100 * 1_048_576 {
-                        Image(systemName: "arrow.up")
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                    }
-                    Spacer()
-                    Text(peak.at.formatted(date: .omitted, time: .shortened))
+                    Text(suspect.name).font(.callout).lineLimit(1)
+                    Image(systemName: "arrow.up")
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text(fmtBytes(peak.peakRSSBytes))
+                        .foregroundStyle(.red)
+                    Spacer()
+                    Text("\(fmtBytes(suspect.startBytes)) → \(fmtBytes(suspect.peakBytes))")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Text("+\(fmtBytes(suspect.growthBytes))")
                         .font(.callout)
                         .monospacedDigit()
+                        .foregroundStyle(.red)
                 }
                 .padding(.vertical, 1)
             }
@@ -201,14 +233,26 @@ struct IncidentReportView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassSurface()
     }
-}
 
-struct GroupPeak: Identifiable {
-    let name: String
-    let peakRSSBytes: UInt64
-    let at: Date
-    let trendBytesPerMin: Double
-    var id: String { name }
+    private func actionsSection(_ episode: PressureEpisode) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("保护动作")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            if episode.actions.isEmpty {
+                Text("期间未执行自动保护动作（未开启或未达到触发条件）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(episode.actions) { action in
+                    HistoryEventRow(event: action)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassSurface()
+    }
 }
 
 // MARK: - Timeline chart

@@ -58,7 +58,7 @@ struct ProcessGroupRow: View {
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(trendColor)
-                    Text(fmtBytes(group.totalRSS))
+                    Text(fmtBytes(group.displayMemoryBytes))
                         .font(.callout)
                         .monospacedDigit()
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
@@ -92,7 +92,7 @@ struct ProcessGroupRow: View {
     }
 
     private var trendText: String {
-        let mbMin = group.trendBytesPerMin / 1_048_576
+        let mbMin = group.footprintTrendBytesPerMin / 1_048_576
         if mbMin >= 1000 { return String(format: "↑ %.1f GB/分", mbMin / 1000) }
         if mbMin > 50 { return String(format: "↑ %.0f MB/分", mbMin) }
         if mbMin < -50 { return String(format: "↓ %.0f MB/分", -mbMin) }

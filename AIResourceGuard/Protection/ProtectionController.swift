@@ -231,7 +231,7 @@ final class ProtectionController {
                 let score = RescueScorer.score(
                     group: group,
                     isForeground: group.key == context.foregroundGroupKey,
-                    baselineMeanRSSMB: context.baseline.groupMeanRSSMB(displayName: group.displayName))
+                    baselineMeanFootprintMB: context.baseline.groupMeanFootprintMB(displayName: group.displayName))
                 return (group, score)
             }
             .max { $0.1 < $1.1 }?

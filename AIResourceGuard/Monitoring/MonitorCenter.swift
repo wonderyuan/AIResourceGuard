@@ -15,11 +15,16 @@ final class MonitorCenter: ObservableObject {
 
     @Published private(set) var system: SystemSample?
     @Published private(set) var groups: [ProcessGroupInfo] = []
-    /// Curated "值得关注的应用" — risk sources first, then stable heavies.
+    /// Curated "值得关注的应用" — attribution-driven, never empty at Danger+.
     @Published private(set) var notableApps: [ProcessGroupInfo] = []
+    /// Why the notable list looks the way it does (fallback note, coverage,
+    /// pressure classification) — for the popover.
+    @Published private(set) var notableContext = NotableSelection()
     @Published private(set) var assessment = RiskAssessment.initial
     @Published private(set) var pressureLevel: PressureLevel = .normal
     @Published private(set) var actionFeedback: [ActionFeedback] = []
+    /// Latest scan attribution confidence (for 设置 ▸ 关于).
+    @Published private(set) var scanStats: ScanStats?
     @Published var popoverVisible = false
 
     struct ActionFeedback: Identifiable {
@@ -50,6 +55,7 @@ final class MonitorCenter: ObservableObject {
     private var fastestGrowing: (name: String, bytesPerMin: Double)?
     private var lastSnapshotAt: Date?
     private var lastHiddenPublishAt = Date.distantPast
+    private var latestScanStats: ScanStats?
 
     private init() {
         let settingsStore = SettingsStore()
@@ -105,6 +111,9 @@ final class MonitorCenter: ObservableObject {
         if notifications { Notifier.shared.requestIfNeeded() }
         checkPreviousSessionEnd()
     }
+
+    /// Whether the machine-relative baseline has enough samples to be used.
+    var baselineReady: Bool { baseline.swapUsedMB.isReady }
 
     /// Called by the popover as soon as it appears: refresh immediately.
     func popoverOpened() {
@@ -195,6 +204,11 @@ final class MonitorCenter: ObservableObject {
                 foregroundGroupKey: foregroundGroupKey,
                 baseline: baseline))
 
+        // Level changes re-curate the notable list between scans.
+        if result.level != result.previousLevel {
+            recomputeNotable()
+        }
+
         // Adaptive cadence: metrics 5/2/1s, process scan 20/10/5s.
         let metricsInterval: TimeInterval
         let scanInterval: TimeInterval
@@ -221,18 +235,36 @@ final class MonitorCenter: ObservableObject {
     private func handleProcess(_ output: ProcessMonitor.Output) {
         latestGroups = output.groups
         fastestGrowing = output.fastestGrowing
+        latestScanStats = output.stats
 
         if assessment.level <= .warning {
             baseline.recordNormalGroups(output.groups)
         }
 
-        let notable = computeNotable(output.groups)
+        recomputeNotable()
 
         // Skip expensive UI publishes while the popover is closed.
         if popoverVisible || Date().timeIntervalSince(lastHiddenPublishAt) > 15 {
             groups = output.groups
-            notableApps = notable
+            notableApps = notableContext.apps
+            scanStats = latestScanStats
             lastHiddenPublishAt = Date()
+        }
+    }
+
+    /// Attribution-driven curation of "值得关注的应用". Recomputed on every
+    /// scan *and* every risk-level change — at Danger/Critical the result is
+    /// never an empty list (falls back to biggest visible consumers).
+    private func recomputeNotable() {
+        let selection = AttributionEngine.analyze(
+            level: assessment.level,
+            sample: system,
+            groups: latestGroups,
+            baseline: baseline,
+            scanStats: latestScanStats)
+        notableContext = selection
+        if popoverVisible {
+            notableApps = selection.apps
         }
     }
 
@@ -246,29 +278,6 @@ final class MonitorCenter: ObservableObject {
             return
         }
         foregroundGroupKey = ProcessTreeAggregator.appGroup(forBundle: bundle).key
-    }
-
-    /// "值得关注的应用" selection — explicitly NOT top-by-RSS:
-    /// 1. groups actively growing (> 50 MB/min = 风险源), worst growth first;
-    /// 2. suspected orphaned/stale workloads (cleanup targets);
-    /// 3. stable heavy residents (> 300 MB), largest first.
-    private func computeNotable(_ groups: [ProcessGroupInfo]) -> [ProcessGroupInfo] {
-        let riskThreshold = 50.0 * 1_048_576
-        let sizeFloor = 300.0 * 1_048_576
-        let candidates = groups.filter {
-            $0.isStaleWorkload
-                || Double($0.totalRSS) > sizeFloor
-                || $0.trendBytesPerMin > riskThreshold
-        }
-        func rank(_ group: ProcessGroupInfo) -> (Int, Double, Double) {
-            if group.isRiskSource { return (0, group.trendBytesPerMin, Double(group.totalRSS)) }
-            if group.isStaleWorkload { return (1, Double(group.totalRSS), 0) }
-            return (2, 0, Double(group.totalRSS))
-        }
-        return candidates
-            .sorted { rank($0) > rank($1) }
-            .prefix(5)
-            .map { $0 }
     }
 
     // MARK: - History snapshot
@@ -289,7 +298,8 @@ final class MonitorCenter: ObservableObject {
                     name: $0.displayName,
                     rssBytes: $0.totalRSS,
                     cpuPercent: $0.cpuFraction * 100,
-                    trendBytesPerMin: $0.trendBytesPerMin)
+                    trendBytesPerMin: $0.footprintTrendBytesPerMin,
+                    footprintBytes: $0.totalFootprint)
             },
             fastestGrowing: fastestGrowing?.name)
         let encoded = (try? JSONEncoder().encode(snapshot))

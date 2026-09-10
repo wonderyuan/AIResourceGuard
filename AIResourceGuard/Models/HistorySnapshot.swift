@@ -24,6 +24,30 @@ struct HistorySnapshot: Identifiable {
         let rssBytes: UInt64
         let cpuPercent: Double
         let trendBytesPerMin: Double
+        /// Physical footprint (0 in rows written before footprint tracking).
+        var footprintBytes: UInt64 = 0
+
+        enum CodingKeys: String, CodingKey {
+            case name, rssBytes, cpuPercent, trendBytesPerMin, footprintBytes
+        }
+
+        init(name: String, rssBytes: UInt64, cpuPercent: Double,
+             trendBytesPerMin: Double, footprintBytes: UInt64 = 0) {
+            self.name = name
+            self.rssBytes = rssBytes
+            self.cpuPercent = cpuPercent
+            self.trendBytesPerMin = trendBytesPerMin
+            self.footprintBytes = footprintBytes
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decode(String.self, forKey: .name)
+            rssBytes = try c.decode(UInt64.self, forKey: .rssBytes)
+            cpuPercent = try c.decode(Double.self, forKey: .cpuPercent)
+            trendBytesPerMin = try c.decode(Double.self, forKey: .trendBytesPerMin)
+            footprintBytes = try c.decodeIfPresent(UInt64.self, forKey: .footprintBytes) ?? 0
+        }
     }
 
     var riskLevel: RiskLevel {
