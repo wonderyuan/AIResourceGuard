@@ -35,7 +35,7 @@ jobs:
       - name: Create DMG
         run: |
           APP="build/Build/Products/Release/AI Resource Guard.app"
-          VERSION=$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString)
+          VERSION=$(plutil -extract CFBundleShortVersionString raw -o - -- "$APP/Contents/Info.plist")
           DMG="AI-Resource-Guard-${VERSION}-${GITHUB_SHA::7}.dmg"
           echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
           hdiutil create \
