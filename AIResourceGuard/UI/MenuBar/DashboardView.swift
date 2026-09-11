@@ -293,28 +293,6 @@ private struct NotableAppsSection: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // ── Paused tasks (dedicated section, always visible) ─────
-            if !store.pausedTasks.isEmpty {
-                Divider()
-                HStack(spacing: 4) {
-                    Image(systemName: "pause.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    Text("已暂停的任务")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                    Text("（点击恢复）")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                VStack(spacing: 0) {
-                    ForEach(store.pausedTasks, id: \.groupKey) { task in
-                        PausedTaskRow(task: task)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
             if activeGroups.isEmpty && store.pausedTasks.isEmpty {
                 Text(emptyMessage)
                     .font(.caption)
@@ -332,6 +310,30 @@ private struct NotableAppsSection: View {
                 : "没有单一明显来源"
         }
         return "没有需要处理的应用"
+    }
+}
+
+// MARK: - Paused tasks panel (placed high in the popover for reliable interaction)
+
+private struct PausedTasksPanel: View {
+    @EnvironmentObject var store: MonitorCenter
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: "pause.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                Text("已暂停的任务")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+            ForEach(store.pausedTasks, id: \.groupKey) { task in
+                PausedTaskRow(task: task)
+            }
+        }
+        .padding(10)
+        .background(.orange.opacity(0.06), in: .rect(cornerRadius: 10))
     }
 }
 
