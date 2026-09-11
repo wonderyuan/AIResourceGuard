@@ -264,31 +264,61 @@ private struct StatusView: View {
 private struct NotableAppsSection: View {
     @EnvironmentObject var store: MonitorCenter
 
+    /// Paused groups get their own dedicated section at the bottom.
+    private var pausedGroups: [ProcessGroupInfo] {
+        store.notableApps.filter(\.anyStopped)
+    }
+    private var activeGroups: [ProcessGroupInfo] {
+        store.notableApps.filter { !$0.anyStopped }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("谁在占用内存")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            if store.notableApps.isEmpty {
-                Text(emptyMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
-            } else {
+        VStack(alignment: .leading, spacing: 6) {
+            // ── Active consumers ─────────────────────────────────────
+            if !activeGroups.isEmpty {
+                Text("谁在占用内存")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
                 if store.notableContext.fallbackOnly {
                     Text("没有单一明显来源，先看占用最高的应用")
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
-                // NOTE: no ScrollView — it intercepts button clicks in
-                // MenuBarExtra windows on macOS 26. Show top 3; the fixed
-                // Intervention-tier height accommodates them.
                 VStack(spacing: 0) {
-                    ForEach(store.notableApps.prefix(3)) { group in
+                    ForEach(activeGroups.prefix(3)) { group in
                         ProcessGroupRow(group: group)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            // ── Paused tasks (dedicated section, always visible) ─────
+            if !pausedGroups.isEmpty {
+                Divider()
+                HStack(spacing: 4) {
+                    Image(systemName: "pause.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text("已暂停的任务")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Text("（点击恢复）")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                VStack(spacing: 0) {
+                    ForEach(pausedGroups) { group in
+                        ProcessGroupRow(group: group)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if activeGroups.isEmpty && pausedGroups.isEmpty {
+                Text(emptyMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
             }
         }
     }

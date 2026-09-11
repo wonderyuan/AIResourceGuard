@@ -3,14 +3,14 @@ import os
 
 private let rowLog = Logger(subsystem: "local.dev.AIResourceGuard", category: "row")
 
-/// One row in "谁在占用内存". Collapsed: name, memory, trend, CPU, tags.
-/// Expanded: process tree + 暂停/恢复/终止. Paused groups dim to gray.
+/// One app/task row. Used in both "谁在占用内存" and "已暂停的任务" sections.
+/// Collapsed: name, memory, trend, CPU, tags. Expanded: process tree +
+/// 暂停/恢复/终止.
 ///
 /// CRITICAL INTERACTION NOTE:
 /// SwiftUI Button does NOT receive mouse events inside MenuBarExtra
-/// popovers on macOS 26 (verified: unified log shows zero button actions).
-/// All interactive elements here use .onTapGesture + .contentShape instead,
-/// which bypasses Button's hit-testing pipeline entirely.
+/// popovers on macOS 26. All interactive elements use .onTapGesture +
+/// .contentShape instead.
 struct ProcessGroupRow: View {
     let group: ProcessGroupInfo
 
@@ -18,67 +18,30 @@ struct ProcessGroupRow: View {
     @State private var expanded = false
     @State private var terminateArmed = false
     @State private var tapFlash = false
-    /// Optimistic pause state: set immediately on tap, cleared by scan refresh.
-    @State private var optimisticPaused = false
+    /// Three-state optimistic pause: .paused forces "paused" look,
+    /// .active forces "running" look, .none defers to scan data.
+    @State private var optimisticState: OptimisticState = .none
+
+    enum OptimisticState {
+        case none, paused, active
+    }
 
     private var isProtected: Bool {
         store.settingsStore.isProtectedGroup(group.key)
     }
 
-    /// Visual state for paused groups (scan data OR optimistic).
-    private var isPaused: Bool { group.anyStopped || optimisticPaused }
+    /// Visual pause state: optimistic override or scan data.
+    private var isPaused: Bool {
+        switch optimisticState {
+        case .paused: return true
+        case .active: return false
+        case .none: return group.anyStopped
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Row header — tap to expand/collapse
-            HStack(spacing: 8) {
-                GroupIconView(group: group)
-                    .frame(width: 22, height: 22)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 5) {
-                        Text(group.displayName)
-                            .font(.callout)
-                            .lineLimit(1)
-                        if group.isRiskSource {
-                            Text("增长异常").tagStyle(.orange)
-                        }
-                        if group.isStaleWorkload {
-                            Text("遗留任务").tagStyle(.teal)
-                        }
-                        if isPaused {
-                            Text("已暂停")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundStyle(.orange)
-                        }
-                        if isProtected {
-                            Image(systemName: "lock.fill")
-                                .font(.system(size: 8))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer()
-                Text(trendText)
-                    .font(.caption)
-                    .monospacedDigit()
-                    .foregroundStyle(trendColor)
-                Text(fmtBytes(group.displayMemoryBytes))
-                    .font(.callout)
-                    .monospacedDigit()
-                Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                rowLog.info("Row tapped: \\(group.displayName, privacy: .public)")
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
-                terminateArmed = false
-            }
-
+            rowHeader
             if expanded {
                 detail
                     .padding(.top, 8)
@@ -86,8 +49,61 @@ struct ProcessGroupRow: View {
             }
         }
         .padding(.vertical, 6)
-        .opacity(isPaused ? 0.55 : 1.0)
-        .saturation(isPaused ? 0.3 : 1.0)
+    }
+
+    // MARK: - Row header (gray when paused, but buttons stay vivid)
+
+    private var rowHeader: some View {
+        HStack(spacing: 8) {
+            GroupIconView(group: group)
+                .frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(group.displayName)
+                        .font(.callout)
+                        .lineLimit(1)
+                    if group.isRiskSource && !isPaused {
+                        Text("增长异常").tagStyle(.orange)
+                    }
+                    if group.isStaleWorkload && !isPaused {
+                        Text("遗留任务").tagStyle(.teal)
+                    }
+                    if isPaused {
+                        Text("已暂停")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.orange)
+                    }
+                    if isProtected {
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 8))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+            Text(trendText)
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(trendColor)
+            Text(fmtBytes(group.displayMemoryBytes))
+                .font(.callout)
+                .monospacedDigit()
+            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            terminateArmed = false
+        }
+        // Dim only the collapsed header; the expanded detail keeps full
+        // color so buttons don't look disabled.
+        .opacity(isPaused && !expanded ? 0.55 : 1.0)
+        .saturation(isPaused && !expanded ? 0.3 : 1.0)
     }
 
     private var cpuText: String {
@@ -104,6 +120,7 @@ struct ProcessGroupRow: View {
     }
 
     private var trendText: String {
+        if isPaused { return "已暂停" }
         let mbMin = group.footprintTrendBytesPerMin / 1_048_576
         if mbMin >= 1000 { return String(format: "↑ %.1f GB/分", mbMin / 1000) }
         if mbMin > 50 { return String(format: "↑ %.0f MB/分", mbMin) }
@@ -112,6 +129,7 @@ struct ProcessGroupRow: View {
     }
 
     private var trendColor: Color {
+        if isPaused { return .orange }
         switch group.trendDirection {
         case .up: return .red
         case .down: return .green
@@ -119,7 +137,7 @@ struct ProcessGroupRow: View {
         }
     }
 
-    // MARK: - Expanded detail
+    // MARK: - Expanded detail (always full color, buttons vivid)
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -162,8 +180,7 @@ struct ProcessGroupRow: View {
                     .foregroundStyle(.tertiary)
             }
 
-            // Action bar — uses onTapGesture, NOT Button (Button doesn't
-            // receive events in MenuBarExtra on macOS 26).
+            // Action bar — onTapGesture, NOT Button.
             HStack(spacing: 12) {
                 if terminateArmed {
                     tapAction(
@@ -187,14 +204,13 @@ struct ProcessGroupRow: View {
                         bg: isPaused ? .green.opacity(0.15) : .accentColor.opacity(0.15),
                         fg: isPaused ? .green : .accentColor
                     ) {
-                        let verb = isPaused ? "resume" : "pause"
-                        rowLog.info("ACTION TAPPED: \\(verb, privacy: .public)")
                         if isPaused {
-                            optimisticPaused = false
+                            // Optimistic: show running immediately.
+                            optimisticState = .active
                             store.protection.resume(group)
                         } else {
-                            // Instant visual: gray out + collapse + banner.
-                            optimisticPaused = true
+                            // Optimistic: show paused immediately, collapse.
+                            optimisticState = .paused
                             withAnimation(Design.Motion.fast) { expanded = false }
                             store.protection.pause(group)
                         }
@@ -233,7 +249,6 @@ struct ProcessGroupRow: View {
         .foregroundStyle(fg)
         .contentShape(Rectangle())
         .onTapGesture {
-            // Brief flash to confirm the tap registered
             withAnimation(.easeOut(duration: 0.1)) { tapFlash = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 withAnimation(.easeIn(duration: 0.2)) { tapFlash = false }
