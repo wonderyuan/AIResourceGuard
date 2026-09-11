@@ -234,7 +234,7 @@ private struct StatusView: View {
             }
 
             if let latest = store.actionFeedback.first,
-               Date().timeIntervalSince(latest.date) < 600 {
+               Date().timeIntervalSince(latest.date) < 5 {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 16))
@@ -266,9 +266,16 @@ private struct StatusView: View {
 private struct NotableAppsSection: View {
     @EnvironmentObject var store: MonitorCenter
 
-    /// Paused groups get their own dedicated section at the bottom.
+    /// Paused groups from the controller's authoritative list — more
+    /// reliable than scan-based anyStopped detection.
+    private var pausedDisplayNames: Set<String> {
+        Set(store.protection.allPausedTasks.map(\.displayName))
+    }
     private var pausedGroups: [ProcessGroupInfo] {
-        store.notableApps.filter(\.anyStopped)
+        let fromLedger = store.groups.filter { pausedDisplayNames.contains($0.displayName) }
+        let fromScan = store.notableApps.filter { $0.anyStopped }
+        var seen = Set<String>()
+        return (fromLedger + fromScan).filter { seen.insert($0.key).inserted }
     }
     private var activeGroups: [ProcessGroupInfo] {
         store.notableApps.filter { !$0.anyStopped }

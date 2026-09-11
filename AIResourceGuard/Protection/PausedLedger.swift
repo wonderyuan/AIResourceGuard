@@ -15,6 +15,8 @@ struct PausedLedgerEntry: Codable, Equatable {
     /// Physical footprint at pause time, bytes (resume order: smallest first).
     let footprintBytes: UInt64
     let pausedAt: Date
+    /// true = user paused manually (never auto-resumed).
+    var isManual: Bool = false
 }
 
 enum PausedLedger {

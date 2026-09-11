@@ -21,11 +21,14 @@ struct PausedTask {
     /// Physical footprint at pause time; staged recovery resumes smallest first.
     let footprintBytes: UInt64
     let pausedAt: Date
+    /// true = user clicked pause (NEVER auto-resumed);
+    /// false = auto-protection paused it (staged recovery may resume).
+    let isManual: Bool
 
     var ledgerEntry: PausedLedgerEntry {
         PausedLedgerEntry(groupKey: groupKey, displayName: displayName,
                           identities: identities, footprintBytes: footprintBytes,
-                          pausedAt: pausedAt)
+                          pausedAt: pausedAt, isManual: isManual)
     }
 }
 
@@ -44,13 +47,18 @@ struct PausedTask {
 final class ProtectionController {
     /// Short human-readable outcome lines for the popover.
     var onFeedback: ((String) -> Void)?
+    /// All currently paused tasks (manual + auto), for the UI.
+    private(set) var allPausedTasks: [PausedTask] = []
 
     private let settingsProvider: () -> AppSettings
     private let policyProvider: () -> ProtectedProcessPolicy
     private unowned let history: HistoryStore
 
     private var pausedTasks: [PausedTask] = [] {
-        didSet { persistLedger() }
+        didSet {
+            persistLedger()
+            allPausedTasks = pausedTasks
+        }
     }
     private var recoveryStableSince: Date?
     private var recoveryNextResumeAt: Date?
@@ -139,7 +147,8 @@ final class ProtectionController {
                     displayName: target.displayName,
                     identities: stoppedIdentities,
                     footprintBytes: target.totalFootprint,
-                    pausedAt: now))
+                    pausedAt: now,
+                    isManual: false))
                 recoveryStableSince = nil
                 allRecoveredAnnounced = false
             }
@@ -186,11 +195,12 @@ final class ProtectionController {
     private func runRecovery(assessment: RiskAssessment,
                              settings: AppSettings,
                              now: Date) {
+        let autoPausedCount = pausedTasks.filter { !$0.isManual }.count
         let decision = RecoveryPlanner.decide(
             RecoveryState(
                 level: assessment.level,
                 now: now,
-                pausedTaskCount: pausedTasks.count,
+                pausedTaskCount: autoPausedCount,
                 stableSince: recoveryStableSince,
                 nextResumeAt: recoveryNextResumeAt,
                 lastResumedAt: recoveryLastResumedAt,
@@ -208,11 +218,15 @@ final class ProtectionController {
             onFeedback?("系统压力回落，观察 \(Int(settings.thresholds.recoveryWindowSeconds)) 秒后开始逐步恢复任务")
 
         case .resumeNext:
-            // Smallest footprint first — least likely to re-stress the machine.
-            guard let index = pausedTasks.indices.min(by: {
-                pausedTasks[$0].footprintBytes < pausedTasks[$1].footprintBytes
+            // Only auto-paused tasks are eligible for staged recovery.
+            // Manually paused tasks stay frozen until the user resumes them.
+            let autoTasks = pausedTasks.filter { !$0.isManual }
+            guard let index = autoTasks.indices.min(by: {
+                autoTasks[$0].footprintBytes < autoTasks[$1].footprintBytes
             }) else { return }
-            let task = pausedTasks.remove(at: index)
+            let task = autoTasks[index]
+            guard let taskIndex = pausedTasks.firstIndex(where: { $0.groupKey == task.groupKey }) else { return }
+            pausedTasks.remove(at: taskIndex)
             resumeIdentities(task.identities)
             recoveryLastResumed = task
             recoveryLastResumedAt = now
@@ -237,7 +251,8 @@ final class ProtectionController {
                     displayName: task.displayName,
                     identities: stillLive,
                     footprintBytes: task.footprintBytes,
-                    pausedAt: now))
+                    pausedAt: now,
+                    isManual: task.isManual))
                 history.record(HistoryEvent(
                     kind: "action",
                     summary: "恢复 \(task.displayName) 后系统再次承压，已重新暂停",
