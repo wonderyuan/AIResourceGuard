@@ -340,7 +340,6 @@ private struct NotableAppsSection: View {
 private struct PausedTaskRow: View {
     let task: PausedTask
     @EnvironmentObject var store: MonitorCenter
-    @State private var tapFlash = false
     @State private var confirmTerminate = false
 
     var body: some View {
@@ -358,55 +357,47 @@ private struct PausedTaskRow: View {
             Spacer()
 
             if confirmTerminate {
-                // SAME pattern as ProcessGroupRow (verified working)
-                actionButton("确认终止", icon: "exclamationmark.triangle.fill",
-                             bg: .red.opacity(0.15), fg: .red) {
+                // .borderless style — same as footer buttons (verified working)
+                Button {
                     confirmTerminate = false
                     store.protection.terminatePausedTask(task)
+                } label: {
+                    Label("确认终止", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
-                actionButton("取消", icon: "xmark",
-                             bg: Color(nsColor: .quaternaryLabelColor), fg: .secondary) {
+                .buttonStyle(.borderless)
+
+                Button {
                     confirmTerminate = false
+                } label: {
+                    Text("取消")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+                .buttonStyle(.borderless)
             } else {
-                actionButton("恢复", icon: "play.fill",
-                             bg: .green.opacity(0.15), fg: .green) {
+                Button {
                     store.protection.resumePausedTask(task)
+                } label: {
+                    Label("恢复", systemImage: "play.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
                 }
-                actionButton("终止", icon: "xmark",
-                             bg: .red.opacity(0.1), fg: .red) {
+                .buttonStyle(.borderless)
+
+                Button {
                     confirmTerminate = true
+                } label: {
+                    Label("终止", systemImage: "xmark")
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
+                .buttonStyle(.borderless)
             }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-    }
-
-    /// EXACT copy of ProcessGroupRow's tapAction (verified working).
-    private func actionButton(_ title: String, icon: String,
-                              bg: Color, fg: Color,
-                              action: @escaping () -> Void) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
-            Text(title)
-                .font(.callout)
-                .fontWeight(.medium)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(tapFlash ? fg.opacity(0.3) : bg,
-                    in: RoundedRectangle(cornerRadius: 8))
-        .foregroundStyle(fg)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeOut(duration: 0.1)) { tapFlash = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                withAnimation(.easeIn(duration: 0.2)) { tapFlash = false }
-            }
-            action()
-        }
     }
 }
 
