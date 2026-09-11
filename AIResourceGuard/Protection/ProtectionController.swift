@@ -417,9 +417,10 @@ final class ProtectionController {
             }
 
             // SIGTERM cannot be delivered to a SIGSTOPPED process — the
-            // signal stays pending until the process runs again. Send
-            // SIGCONT first so the terminate actually takes effect.
-            if action == .terminate && proc.isStopped {
+            // signal stays pending until the process runs again. ALWAYS
+            // send SIGCONT first (no-op for running processes) because
+            // scan-based isStopped detection is unreliable.
+            if action == .terminate {
                 kill(proc.pid, SIGCONT)
                 usleep(10_000) // 10ms for the process to resume
             }
