@@ -16,7 +16,6 @@ struct ProcessGroupRow: View {
 
     @EnvironmentObject var store: MonitorCenter
     @State private var expanded = false
-    @State private var terminateArmed = false
     @State private var tapFlash = false
     /// Three-state optimistic pause: .paused forces "paused" look,
     /// .active forces "running" look, .none defers to scan data.
@@ -98,7 +97,6 @@ struct ProcessGroupRow: View {
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
-            terminateArmed = false
         }
         // Dim only the collapsed header; the expanded detail keeps full
         // color so buttons don't look disabled.
@@ -180,49 +178,34 @@ struct ProcessGroupRow: View {
                     .foregroundStyle(.tertiary)
             }
 
-            // Action bar — onTapGesture, NOT Button.
+            // Action bar — one click per action, no two-step confirm
+            // (scan refreshes every 1-5s reset @State, making two-step
+            //  confirms unusable).
             HStack(spacing: 12) {
-                if terminateArmed {
-                    tapAction(
-                        title: "确认终止 \(group.displayName)",
-                        icon: "exclamationmark.triangle.fill",
-                        bg: .red.opacity(0.15),
-                        fg: .red
-                    ) {
-                        terminateArmed = false
-                        store.protection.terminate(group)
-                        store.popoverOpened()
+                tapAction(
+                    title: isPaused ? "恢复任务" : "暂停任务",
+                    icon: isPaused ? "play.fill" : "pause.fill",
+                    bg: isPaused ? .green.opacity(0.15) : .accentColor.opacity(0.15),
+                    fg: isPaused ? .green : .accentColor
+                ) {
+                    if isPaused {
+                        optimisticState = .active
+                        store.protection.resume(group)
+                    } else {
+                        optimisticState = .paused
+                        withAnimation(Design.Motion.fast) { expanded = false }
+                        store.protection.pause(group)
                     }
-                    tapAction(title: "取消", icon: "xmark",
-                              bg: Color(nsColor: .quaternaryLabelColor), fg: .secondary) {
-                        terminateArmed = false
-                    }
-                } else {
-                    tapAction(
-                        title: isPaused ? "恢复任务" : "暂停任务",
-                        icon: isPaused ? "play.fill" : "pause.fill",
-                        bg: isPaused ? .green.opacity(0.15) : .accentColor.opacity(0.15),
-                        fg: isPaused ? .green : .accentColor
-                    ) {
-                        if isPaused {
-                            // Optimistic: show running immediately.
-                            optimisticState = .active
-                            store.protection.resume(group)
-                        } else {
-                            // Optimistic: show paused immediately, collapse.
-                            optimisticState = .paused
-                            withAnimation(Design.Motion.fast) { expanded = false }
-                            store.protection.pause(group)
-                        }
-                        store.popoverOpened()
-                    }
+                    store.popoverOpened()
+                }
 
-                    Spacer()
+                Spacer()
 
-                    tapAction(title: "终止", icon: "xmark",
-                              bg: .red.opacity(0.1), fg: .red) {
-                        terminateArmed = true
-                    }
+                tapAction(title: "终止", icon: "xmark.circle.fill",
+                          bg: .red.opacity(0.12), fg: .red) {
+                    store.protection.terminate(group)
+                    withAnimation(Design.Motion.fast) { expanded = false }
+                    store.popoverOpened()
                 }
             }
         }
