@@ -86,7 +86,8 @@ enum AttributionEngine {
         }
         deviators.sort { $0.excessMB > $1.excessMB }
 
-        result.hasClearSource = !growers.isEmpty || !deviators.isEmpty || !stale.isEmpty
+        let paused = groups.filter(\.anyStopped)
+        result.hasClearSource = !paused.isEmpty || !growers.isEmpty || !deviators.isEmpty || !stale.isEmpty
 
         // --- Attribution confidence --------------------------------------------
         let attributableFootprint = groups.reduce(0) { $0 + $1.totalFootprint }
@@ -141,6 +142,9 @@ enum AttributionEngine {
             guard !ordered.contains(where: { $0.key == group.key }) else { return }
             ordered.append(group)
         }
+        // Paused tasks ALWAYS appear first — the user needs the resume
+        // button visible regardless of what else is happening.
+        paused.forEach(include)
         growers.forEach(include)
         stale.forEach(include)
         deviators.forEach { include($0.group) }

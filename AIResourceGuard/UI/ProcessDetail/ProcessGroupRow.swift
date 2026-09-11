@@ -1,20 +1,23 @@
 import SwiftUI
+import os
+
+private let rowLog = Logger(subsystem: "local.dev.AIResourceGuard", category: "row")
 
 /// One row in "谁在占用内存". Collapsed: name, memory, trend, CPU, tags.
 /// Expanded: process tree + 暂停/恢复/终止. Paused groups dim to gray.
 ///
-/// Interaction notes:
-/// - No confirmationDialog/alert — in MenuBarExtra they dismiss the popover.
-/// - No ScrollView around the list — ScrollView in MenuBarExtra windows
-///   intercepts button clicks on macOS 26 (verified by user testing).
-/// - All buttons use .bordered style + .contentShape(Rectangle()) for
-///   reliable hit testing.
+/// CRITICAL INTERACTION NOTE:
+/// SwiftUI Button does NOT receive mouse events inside MenuBarExtra
+/// popovers on macOS 26 (verified: unified log shows zero button actions).
+/// All interactive elements here use .onTapGesture + .contentShape instead,
+/// which bypasses Button's hit-testing pipeline entirely.
 struct ProcessGroupRow: View {
     let group: ProcessGroupInfo
 
     @EnvironmentObject var store: MonitorCenter
     @State private var expanded = false
     @State private var terminateArmed = false
+    @State private var tapFlash = false
 
     private var isProtected: Bool {
         store.settingsStore.isProtectedGroup(group.key)
@@ -25,54 +28,54 @@ struct ProcessGroupRow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
-                terminateArmed = false
-            } label: {
-                HStack(spacing: 8) {
-                    GroupIconView(group: group)
-                        .frame(width: 22, height: 22)
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 5) {
-                            Text(group.displayName)
-                                .font(.callout)
-                                .lineLimit(1)
-                            if group.isRiskSource {
-                                Text("增长异常").tagStyle(.orange)
-                            }
-                            if group.isStaleWorkload {
-                                Text("遗留任务").tagStyle(.teal)
-                            }
-                            if isPaused {
-                                Text("已暂停")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundStyle(.orange)
-                            }
-                            if isProtected {
-                                Image(systemName: "lock.fill")
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(.secondary)
-                            }
+            // Row header — tap to expand/collapse
+            HStack(spacing: 8) {
+                GroupIconView(group: group)
+                    .frame(width: 22, height: 22)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 5) {
+                        Text(group.displayName)
+                            .font(.callout)
+                            .lineLimit(1)
+                        if group.isRiskSource {
+                            Text("增长异常").tagStyle(.orange)
                         }
-                        Text(subtitle)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                        if group.isStaleWorkload {
+                            Text("遗留任务").tagStyle(.teal)
+                        }
+                        if isPaused {
+                            Text("已暂停")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.orange)
+                        }
+                        if isProtected {
+                            Image(systemName: "lock.fill")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    Spacer()
-                    Text(trendText)
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(trendColor)
-                    Text(fmtBytes(group.displayMemoryBytes))
-                        .font(.callout)
-                        .monospacedDigit()
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    Text(subtitle)
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-                .contentShape(Rectangle())
+                Spacer()
+                Text(trendText)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(trendColor)
+                Text(fmtBytes(group.displayMemoryBytes))
+                    .font(.callout)
+                    .monospacedDigit()
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                rowLog.info("Row tapped: \\(group.displayName, privacy: .public)")
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                terminateArmed = false
+            }
 
             if expanded {
                 detail
@@ -81,7 +84,6 @@ struct ProcessGroupRow: View {
             }
         }
         .padding(.vertical, 6)
-        // Paused groups dim to visually communicate their state.
         .opacity(isPaused ? 0.55 : 1.0)
         .saturation(isPaused ? 0.3 : 1.0)
     }
@@ -158,41 +160,47 @@ struct ProcessGroupRow: View {
                     .foregroundStyle(.tertiary)
             }
 
-            // Action bar — prominent, always visible when expanded.
-            HStack(spacing: 10) {
+            // Action bar — uses onTapGesture, NOT Button (Button doesn't
+            // receive events in MenuBarExtra on macOS 26).
+            HStack(spacing: 12) {
                 if terminateArmed {
-                    confirmTerminate
+                    tapAction(
+                        title: "确认终止 \(group.displayName)",
+                        icon: "exclamationmark.triangle.fill",
+                        bg: .red.opacity(0.15),
+                        fg: .red
+                    ) {
+                        terminateArmed = false
+                        store.protection.terminate(group)
+                        store.popoverOpened()
+                    }
+                    tapAction(title: "取消", icon: "xmark",
+                              bg: Color(nsColor: .quaternaryLabelColor), fg: .secondary) {
+                        terminateArmed = false
+                    }
                 } else {
-                    // Primary action: pause or resume
-                    Button {
+                    tapAction(
+                        title: isPaused ? "恢复任务" : "暂停任务",
+                        icon: isPaused ? "play.fill" : "pause.fill",
+                        bg: isPaused ? .green.opacity(0.15) : .accentColor.opacity(0.15),
+                        fg: isPaused ? .green : .accentColor
+                    ) {
+                        let verb = isPaused ? "resume" : "pause"
+                        rowLog.info("ACTION TAPPED: \\(verb, privacy: .public)")
                         if isPaused {
                             store.protection.resume(group)
                         } else {
                             store.protection.pause(group)
                         }
                         store.popoverOpened()
-                    } label: {
-                        Label(isPaused ? "恢复任务" : "暂停任务",
-                              systemImage: isPaused ? "play.fill" : "pause.fill")
-                            .font(.callout)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
-                    .tint(isPaused ? .green : .accentColor)
-                    .contentShape(Rectangle())
 
                     Spacer()
 
-                    Button {
+                    tapAction(title: "终止", icon: "xmark",
+                              bg: .red.opacity(0.1), fg: .red) {
                         terminateArmed = true
-                    } label: {
-                        Label("终止", systemImage: "xmark")
-                            .font(.callout)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.regular)
-                    .tint(.red)
-                    .contentShape(Rectangle())
                 }
             }
         }
@@ -201,30 +209,30 @@ struct ProcessGroupRow: View {
                     in: .rect(cornerRadius: Design.Radius.panel))
     }
 
-    private var confirmTerminate: some View {
-        HStack(spacing: 10) {
-            Button {
-                terminateArmed = false
-                store.protection.terminate(group)
-                store.popoverOpened()
-            } label: {
-                Label("确认终止 \(group.displayName)",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
+    /// Custom tappable label — bypasses Button entirely.
+    private func tapAction(title: String, icon: String,
+                           bg: Color, fg: Color,
+                           action: @escaping () -> Void) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .medium))
+            Text(title)
+                .font(.callout)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(tapFlash ? fg.opacity(0.3) : bg,
+                    in: RoundedRectangle(cornerRadius: 8))
+        .foregroundStyle(fg)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Brief flash to confirm the tap registered
+            withAnimation(.easeOut(duration: 0.1)) { tapFlash = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                withAnimation(.easeIn(duration: 0.2)) { tapFlash = false }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
-            .tint(.red)
-            .contentShape(Rectangle())
-
-            Button("取消") {
-                terminateArmed = false
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
-            .contentShape(Rectangle())
-
-            Spacer()
+            action()
         }
     }
 }

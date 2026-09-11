@@ -28,8 +28,14 @@ struct DashboardView: View {
     }
 
     private var tier: Tier {
+        // Paused tasks force at least the Attention tier so their resume
+        // buttons stay visible — a paused task the user can't find to resume
+        // is a frozen process left behind forever.
+        let hasPausedTasks = store.notableApps.contains { $0.anyStopped }
+            || store.groups.contains { $0.anyStopped }
         switch store.assessment.level {
-        case .normal: return .compact
+        case .normal:
+            return hasPausedTasks ? .attention : .compact
         case .warning: return .attention
         case .danger, .critical: return .intervention
         }
