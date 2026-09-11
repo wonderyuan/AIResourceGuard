@@ -48,6 +48,38 @@ struct ProcessGroupRow: View {
             }
         }
         .padding(.vertical, 6)
+        .contextMenu {
+            if isPaused {
+                Button {
+                    optimisticState = .active
+                    store.protection.resume(group)
+                    store.popoverOpened()
+                } label: {
+                    Label("恢复任务", systemImage: "play.fill")
+                }
+            } else {
+                Button {
+                    optimisticState = .paused
+                    store.protection.pause(group)
+                    store.popoverOpened()
+                } label: {
+                    Label("暂停任务", systemImage: "pause.fill")
+                }
+            }
+            Divider()
+            Button(role: .destructive) {
+                store.protection.terminate(group)
+                store.popoverOpened()
+            } label: {
+                Label("终止任务（SIGTERM）", systemImage: "xmark.circle")
+            }
+            Button(role: .destructive) {
+                store.protection.forceTerminate(group)
+                store.popoverOpened()
+            } label: {
+                Label("强制退出（SIGKILL）", systemImage: "exclamationmark.triangle")
+            }
+        }
     }
 
     // MARK: - Row header (gray when paused, but buttons stay vivid)
