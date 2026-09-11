@@ -344,11 +344,11 @@ private struct PausedTaskRow: View {
     @State private var confirmTerminate = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Image(systemName: "pause.circle.fill")
-                .font(.system(size: 16))
+                .font(.system(size: 18))
                 .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(task.displayName)
                     .font(.callout)
                 Text("\(task.identities.count) 个进程 · \(fmtBytes(task.footprintBytes))")
@@ -358,45 +358,46 @@ private struct PausedTaskRow: View {
             Spacer()
 
             if confirmTerminate {
-                // Two-click confirm (no dialog — dialogs close the popover)
-                tapButton("确认终止", icon: "exclamationmark.triangle.fill",
-                          bg: .red.opacity(0.15), fg: .red) {
+                // SAME pattern as ProcessGroupRow (verified working)
+                actionButton("确认终止", icon: "exclamationmark.triangle.fill",
+                             bg: .red.opacity(0.15), fg: .red) {
                     confirmTerminate = false
                     store.protection.terminatePausedTask(task)
                 }
-                tapButton("取消", icon: "xmark",
-                          bg: Color(nsColor: .quaternaryLabelColor), fg: .secondary) {
+                actionButton("取消", icon: "xmark",
+                             bg: Color(nsColor: .quaternaryLabelColor), fg: .secondary) {
                     confirmTerminate = false
                 }
             } else {
-                tapButton("恢复", icon: "play.fill",
-                          bg: .green.opacity(0.15), fg: .green) {
+                actionButton("恢复", icon: "play.fill",
+                             bg: .green.opacity(0.15), fg: .green) {
                     store.protection.resumePausedTask(task)
                 }
-                tapButton("终止", icon: "xmark",
-                          bg: .red.opacity(0.1), fg: .red) {
+                actionButton("终止", icon: "xmark",
+                             bg: .red.opacity(0.1), fg: .red) {
                     confirmTerminate = true
                 }
             }
         }
-        .padding(.vertical, 4)
-        .opacity(0.85)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
     }
 
-    private func tapButton(_ title: String, icon: String,
-                           bg: Color, fg: Color,
-                           action: @escaping () -> Void) -> some View {
-        HStack(spacing: 4) {
+    /// EXACT copy of ProcessGroupRow's tapAction (verified working).
+    private func actionButton(_ title: String, icon: String,
+                              bg: Color, fg: Color,
+                              action: @escaping () -> Void) -> some View {
+        HStack(spacing: 5) {
             Image(systemName: icon)
-                .font(.system(size: 10, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
             Text(title)
-                .font(.caption)
+                .font(.callout)
                 .fontWeight(.medium)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
         .background(tapFlash ? fg.opacity(0.3) : bg,
-                    in: RoundedRectangle(cornerRadius: 6))
+                    in: RoundedRectangle(cornerRadius: 8))
         .foregroundStyle(fg)
         .contentShape(Rectangle())
         .onTapGesture {
