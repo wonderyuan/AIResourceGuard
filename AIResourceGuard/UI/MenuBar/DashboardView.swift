@@ -233,14 +233,18 @@ private struct StatusView: View {
 
             if let latest = store.actionFeedback.first,
                Date().timeIntervalSince(latest.date) < 600 {
-                Label(latest.text, systemImage: "checkmark.circle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.green)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.green.opacity(0.1), in: .rect(cornerRadius: 8))
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 16))
+                    Text(latest.text)
+                        .font(.system(.callout, design: .rounded).weight(.medium))
+                }
+                .foregroundStyle(.green)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.green.opacity(0.12), in: .rect(cornerRadius: 10))
+                .transition(.scale(scale: 0.95).combined(with: .opacity))
             }
         }
     }

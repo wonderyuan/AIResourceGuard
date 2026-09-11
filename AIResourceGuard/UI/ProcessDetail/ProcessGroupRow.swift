@@ -18,13 +18,15 @@ struct ProcessGroupRow: View {
     @State private var expanded = false
     @State private var terminateArmed = false
     @State private var tapFlash = false
+    /// Optimistic pause state: set immediately on tap, cleared by scan refresh.
+    @State private var optimisticPaused = false
 
     private var isProtected: Bool {
         store.settingsStore.isProtectedGroup(group.key)
     }
 
-    /// Visual state for paused groups.
-    private var isPaused: Bool { group.anyStopped }
+    /// Visual state for paused groups (scan data OR optimistic).
+    private var isPaused: Bool { group.anyStopped || optimisticPaused }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -188,8 +190,12 @@ struct ProcessGroupRow: View {
                         let verb = isPaused ? "resume" : "pause"
                         rowLog.info("ACTION TAPPED: \\(verb, privacy: .public)")
                         if isPaused {
+                            optimisticPaused = false
                             store.protection.resume(group)
                         } else {
+                            // Instant visual: gray out + collapse + banner.
+                            optimisticPaused = true
+                            withAnimation(Design.Motion.fast) { expanded = false }
                             store.protection.pause(group)
                         }
                         store.popoverOpened()
