@@ -227,10 +227,14 @@ private struct StatusView: View {
 
             if let latest = store.actionFeedback.first,
                Date().timeIntervalSince(latest.date) < 600 {
-                Label(latest.text, systemImage: "checkmark.shield")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Label(latest.text, systemImage: "checkmark.circle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.green.opacity(0.1), in: .rect(cornerRadius: 8))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
     }
@@ -266,14 +270,15 @@ private struct NotableAppsSection: View {
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(store.notableApps) { group in
-                            ProcessGroupRow(group: group)
-                        }
+                // NOTE: no ScrollView — it intercepts button clicks in
+                // MenuBarExtra windows on macOS 26. Show top 3; the fixed
+                // Intervention-tier height accommodates them.
+                VStack(spacing: 0) {
+                    ForEach(store.notableApps.prefix(3)) { group in
+                        ProcessGroupRow(group: group)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }

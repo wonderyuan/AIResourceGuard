@@ -1,23 +1,27 @@
 import SwiftUI
 
-/// One row in "谁在占用内存". Collapsed: name, aggregated memory, growth
-/// trend, CPU, risk-source tag. Expanded: process tree + 暂停/恢复/终止.
+/// One row in "谁在占用内存". Collapsed: name, memory, trend, CPU, tags.
+/// Expanded: process tree + 暂停/恢复/终止. Paused groups dim to gray.
 ///
-/// IMPORTANT: no confirmationDialog / alert here — in a MenuBarExtra window
-/// they steal focus and dismiss the entire popover. Destructive actions use
-/// inline two-click confirm instead.
+/// Interaction notes:
+/// - No confirmationDialog/alert — in MenuBarExtra they dismiss the popover.
+/// - No ScrollView around the list — ScrollView in MenuBarExtra windows
+///   intercepts button clicks on macOS 26 (verified by user testing).
+/// - All buttons use .bordered style + .contentShape(Rectangle()) for
+///   reliable hit testing.
 struct ProcessGroupRow: View {
     let group: ProcessGroupInfo
 
     @EnvironmentObject var store: MonitorCenter
     @State private var expanded = false
-    /// Inline two-click confirm for destructive actions (never a dialog —
-    /// dialogs close the whole popover in MenuBarExtra).
     @State private var terminateArmed = false
 
     private var isProtected: Bool {
         store.settingsStore.isProtectedGroup(group.key)
     }
+
+    /// Visual state for paused groups.
+    private var isPaused: Bool { group.anyStopped }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,6 +42,11 @@ struct ProcessGroupRow: View {
                             }
                             if group.isStaleWorkload {
                                 Text("遗留任务").tagStyle(.teal)
+                            }
+                            if isPaused {
+                                Text("已暂停")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(.orange)
                             }
                             if isProtected {
                                 Image(systemName: "lock.fill")
@@ -72,6 +81,9 @@ struct ProcessGroupRow: View {
             }
         }
         .padding(.vertical, 6)
+        // Paused groups dim to visually communicate their state.
+        .opacity(isPaused ? 0.55 : 1.0)
+        .saturation(isPaused ? 0.3 : 1.0)
     }
 
     private var cpuText: String {
@@ -107,12 +119,6 @@ struct ProcessGroupRow: View {
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if group.anyStopped {
-                Label("已暂停", systemImage: "pause.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
             let parentPids = Set(group.processes.map(\.ppid))
             ForEach(Array(group.processes.prefix(8).enumerated()), id: \.element.pid) { _, proc in
                 HStack(spacing: 6) {
@@ -152,65 +158,74 @@ struct ProcessGroupRow: View {
                     .foregroundStyle(.tertiary)
             }
 
-            // Inline two-click confirm: first click arms the button, second
-            // click executes. NEVER use confirmationDialog here — it steals
-            // focus and closes the entire MenuBarExtra popover.
-            HStack(spacing: 8) {
-                if group.isStaleWorkload {
-                    actionButton("结束遗留任务", color: .teal) {
-                        store.protection.terminate(group)
-                    }
-                } else if group.anyStopped {
-                    actionButton("恢复任务", color: .accentColor) {
-                        store.protection.resume(group)
-                    }
-                } else {
-                    actionButton("暂停任务", color: .accentColor) {
-                        store.protection.pause(group)
-                    }
-                }
-
-                Spacer()
-
+            // Action bar — prominent, always visible when expanded.
+            HStack(spacing: 10) {
                 if terminateArmed {
+                    confirmTerminate
+                } else {
+                    // Primary action: pause or resume
                     Button {
-                        terminateArmed = false
-                        store.protection.terminate(group)
+                        if isPaused {
+                            store.protection.resume(group)
+                        } else {
+                            store.protection.pause(group)
+                        }
+                        store.popoverOpened()
                     } label: {
-                        Text("确认终止 \(group.displayName)？")
-                            .font(.caption)
+                        Label(isPaused ? "恢复任务" : "暂停任务",
+                              systemImage: isPaused ? "play.fill" : "pause.fill")
+                            .font(.callout)
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(.red)
+                    .controlSize(.regular)
+                    .tint(isPaused ? .green : .accentColor)
+                    .contentShape(Rectangle())
 
-                    Button("取消") {
-                        terminateArmed = false
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    Button("终止任务") {
+                    Spacer()
+
+                    Button {
                         terminateArmed = true
+                    } label: {
+                        Label("终止", systemImage: "xmark")
+                            .font(.callout)
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .controlSize(.regular)
                     .tint(.red)
+                    .contentShape(Rectangle())
                 }
             }
         }
         .padding(12)
-        .glassSurface(Design.Radius.panel)
+        .background(.quaternary.opacity(0.35),
+                    in: .rect(cornerRadius: Design.Radius.panel))
     }
 
-    /// Standard bordered button — .glass button style has hit-testing issues
-    /// inside MenuBarExtra popover windows.
-    private func actionButton(_ title: String, color: Color,
-                              action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
+    private var confirmTerminate: some View {
+        HStack(spacing: 10) {
+            Button {
+                terminateArmed = false
+                store.protection.terminate(group)
+                store.popoverOpened()
+            } label: {
+                Label("确认终止 \(group.displayName)",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .tint(.red)
+            .contentShape(Rectangle())
+
+            Button("取消") {
+                terminateArmed = false
+            }
             .buttonStyle(.bordered)
-            .controlSize(.small)
-            .tint(color)
+            .controlSize(.regular)
+            .contentShape(Rectangle())
+
+            Spacer()
+        }
     }
 }
 

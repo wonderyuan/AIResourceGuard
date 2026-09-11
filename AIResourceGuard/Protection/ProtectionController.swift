@@ -95,18 +95,23 @@ final class ProtectionController {
     // MARK: - Manual actions (Popover buttons)
 
     func pause(_ group: ProcessGroupInfo) {
-        _ = act(group: group, action: .pause, isAutomatic: false)
+        log.info("Manual pause requested for \(group.displayName, privacy: .public) (\(group.processes.count) procs)")
+        let stopped = act(group: group, action: .pause, isAutomatic: false)
+        log.info("Manual pause result: \(stopped.count) signaled, \(stopped.map(\.pid), privacy: .public)")
     }
 
     func resume(_ group: ProcessGroupInfo) {
+        log.info("Manual resume requested for \(group.displayName, privacy: .public)")
         _ = act(group: group, action: .resume, isAutomatic: false)
     }
 
     func terminate(_ group: ProcessGroupInfo) {
+        log.info("Manual terminate requested for \(group.displayName, privacy: .public)")
         _ = act(group: group, action: .terminate, isAutomatic: false)
     }
 
     func forceTerminate(_ group: ProcessGroupInfo) {
+        log.info("Manual force-terminate requested for \(group.displayName, privacy: .public)")
         _ = act(group: group, action: .forceTerminate, isAutomatic: false)
     }
 
