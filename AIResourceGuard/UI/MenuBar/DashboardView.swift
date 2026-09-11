@@ -225,7 +225,9 @@ private struct StatusView: View {
             }
             .foregroundStyle(.secondary)
 
-            if store.notableContext.attributionIncomplete && level >= .danger {
+            // "去向不明" only when we genuinely couldn't identify a cause.
+            // Never show it alongside a specific cause — that's contradictory.
+            if store.notableContext.source == .incompleteAttribution && level >= .danger {
                 Label("系统压力严重，部分内存去向不明", systemImage: "eye.slash")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -251,7 +253,7 @@ private struct StatusView: View {
 
     private var sourceText: String {
         let source = store.notableContext.source
-        guard source != .none else { return "" }
+        guard source != .none, source != .incompleteAttribution else { return "" }
         if case .singleRunaway(let name) = source {
             return "原因：\(name) 增长失控"
         }
