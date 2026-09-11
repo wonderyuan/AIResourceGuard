@@ -266,17 +266,6 @@ private struct StatusView: View {
 private struct NotableAppsSection: View {
     @EnvironmentObject var store: MonitorCenter
 
-    /// Paused groups from the controller's authoritative list — more
-    /// reliable than scan-based anyStopped detection.
-    private var pausedDisplayNames: Set<String> {
-        Set(store.protection.allPausedTasks.map(\.displayName))
-    }
-    private var pausedGroups: [ProcessGroupInfo] {
-        let fromLedger = store.groups.filter { pausedDisplayNames.contains($0.displayName) }
-        let fromScan = store.notableApps.filter { $0.anyStopped }
-        var seen = Set<String>()
-        return (fromLedger + fromScan).filter { seen.insert($0.key).inserted }
-    }
     private var activeGroups: [ProcessGroupInfo] {
         store.notableApps.filter { !$0.anyStopped }
     }
@@ -302,7 +291,7 @@ private struct NotableAppsSection: View {
             }
 
             // ── Paused tasks (dedicated section, always visible) ─────
-            if !pausedGroups.isEmpty {
+            if !store.pausedTasks.isEmpty {
                 Divider()
                 HStack(spacing: 4) {
                     Image(systemName: "pause.circle.fill")
@@ -316,14 +305,14 @@ private struct NotableAppsSection: View {
                         .foregroundStyle(.tertiary)
                 }
                 VStack(spacing: 0) {
-                    ForEach(pausedGroups) { group in
-                        ProcessGroupRow(group: group)
+                    ForEach(store.pausedTasks, id: \.groupKey) { task in
+                        PausedTaskRow(task: task)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if activeGroups.isEmpty && pausedGroups.isEmpty {
+            if activeGroups.isEmpty && store.pausedTasks.isEmpty {
                 Text(emptyMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -340,6 +329,54 @@ private struct NotableAppsSection: View {
                 : "没有单一明显来源"
         }
         return "没有需要处理的应用"
+    }
+}
+
+// MARK: - Paused task row (driven by the ledger, not scan data)
+
+private struct PausedTaskRow: View {
+    let task: PausedTask
+    @EnvironmentObject var store: MonitorCenter
+    @State private var tapFlash = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "pause.circle.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(task.displayName)
+                    .font(.callout)
+                Text("\(task.identities.count) 个进程 · \(fmtBytes(task.footprintBytes))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+            // Resume button
+            HStack(spacing: 5) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 11, weight: .medium))
+                Text("恢复")
+                    .font(.callout)
+                    .fontWeight(.medium)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(tapFlash ? Color.green.opacity(0.3) : Color.green.opacity(0.15),
+                        in: RoundedRectangle(cornerRadius: 8))
+            .foregroundStyle(.green)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeOut(duration: 0.1)) { tapFlash = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    withAnimation(.easeIn(duration: 0.2)) { tapFlash = false }
+                }
+                // Resume via the controller (removes from ledger)
+                store.protection.resumePausedTask(task)
+            }
+        }
+        .padding(.vertical, 4)
+        .opacity(0.75)
     }
 }
 

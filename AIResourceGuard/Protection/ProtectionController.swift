@@ -47,8 +47,8 @@ struct PausedTask {
 final class ProtectionController {
     /// Short human-readable outcome lines for the popover.
     var onFeedback: ((String) -> Void)?
-    /// All currently paused tasks (manual + auto), for the UI.
-    private(set) var allPausedTasks: [PausedTask] = []
+    /// Notifies MonitorCenter whenever the paused task list changes.
+    var onPausedTasksChanged: (([PausedTask]) -> Void)?
 
     private let settingsProvider: () -> AppSettings
     private let policyProvider: () -> ProtectedProcessPolicy
@@ -57,7 +57,7 @@ final class ProtectionController {
     private var pausedTasks: [PausedTask] = [] {
         didSet {
             persistLedger()
-            allPausedTasks = pausedTasks
+            onPausedTasksChanged?(pausedTasks)
         }
     }
     private var recoveryStableSince: Date?
@@ -86,6 +86,15 @@ final class ProtectionController {
     /// Resumes tasks left frozen by a previous crashed session.
     func recoverOrphanedTasks() {
         PausedLedger.recoverOrphanedTasks(history: history)
+    }
+
+    /// Resume a specific paused task by its ledger entry (used by the
+    /// "已暂停的任务" section which is ledger-driven, not scan-driven).
+    func resumePausedTask(_ task: PausedTask) {
+        log.info("Ledger resume: \(task.displayName, privacy: .public)")
+        resumeIdentities(task.identities)
+        pausedTasks.removeAll { $0.groupKey == task.groupKey }
+        onFeedback?("已恢复 \(task.displayName) 任务")
     }
 
     /// Safety net: resume everything before the app terminates gracefully.

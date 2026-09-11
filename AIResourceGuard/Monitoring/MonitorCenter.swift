@@ -23,6 +23,9 @@ final class MonitorCenter: ObservableObject {
     @Published private(set) var assessment = RiskAssessment.initial
     @Published private(set) var pressureLevel: PressureLevel = .normal
     @Published private(set) var actionFeedback: [ActionFeedback] = []
+    /// Authoritative list of currently paused tasks — drives the
+    /// "已暂停的任务" section, independent of scan data.
+    @Published private(set) var pausedTasks: [PausedTask] = []
     /// Latest scan attribution confidence (for 设置 ▸ 关于).
     @Published private(set) var scanStats: ScanStats?
     @Published var popoverVisible = false
@@ -89,6 +92,9 @@ final class MonitorCenter: ObservableObject {
         }
         protection.onFeedback = { [weak self] text in
             self?.pushFeedback(text)
+        }
+        protection.onPausedTasksChanged = { [weak self] tasks in
+            self?.pausedTasks = tasks
         }
 
         pressureMonitor.onEvent = { [weak self] level in
