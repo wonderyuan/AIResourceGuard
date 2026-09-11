@@ -39,31 +39,38 @@ enum PausedLedger {
         UserDefaults.standard.removeObject(forKey: key)
     }
 
-    /// Resumes every ledger task whose pid still belongs to the original
-    /// process (PID-reuse safe), records what happened, clears the ledger.
+    /// Resumes ledger tasks whose pid still belongs to the original
+    /// process (PID-reuse safe). AUTO-paused tasks are resumed (the guard
+    /// owes them a recovery); MANUAL pauses stay frozen — the user chose to
+    /// pause them and that choice survives restarts.
     @discardableResult
     static func recoverOrphanedTasks(history: HistoryStore) -> Int {
         let entries = load()
         guard !entries.isEmpty else { return 0 }
         var resumed = 0
-        var recycled = 0
+        var keptFrozen = 0
         for entry in entries {
+            if entry.isManual {
+                keptFrozen += 1
+                continue // user paused this — keep it frozen
+            }
             for identity in entry.identities {
-                guard identity.stillCurrent() else {
-                    if identity.wasRecycled { recycled += 1 }
-                    continue
-                }
+                guard identity.stillCurrent() else { continue }
                 if kill(identity.pid, SIGCONT) == 0 || errno == ESRCH {
                     resumed += 1
                 }
             }
         }
-        history.record(HistoryEvent(
-            kind: "action",
-            summary: "上次退出时未恢复的任务已自动恢复（\(resumed) 个进程，跳过 \(recycled) 个已更换的 pid）",
-            detail: entries.map(\.displayName).joined(separator: ", ")))
-        log.info("Ledger recovery: resumed \(resumed), recycled \(recycled)")
-        clear()
+        if resumed > 0 || keptFrozen > 0 {
+            history.record(HistoryEvent(
+                kind: "action",
+                summary: "启动恢复：自动恢复 \(resumed) 个进程，保留 \(keptFrozen) 个手动暂停的任务",
+                detail: entries.map(\.displayName).joined(separator: ", ")))
+        }
+        // Keep manual entries in the ledger; clear only auto ones.
+        let manualEntries = entries.filter(\.isManual)
+        save(manualEntries)
+        log.info("Ledger recovery: resumed \(resumed), kept frozen \(keptFrozen)")
         return resumed
     }
 }

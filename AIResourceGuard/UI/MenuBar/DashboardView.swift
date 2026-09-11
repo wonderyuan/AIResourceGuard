@@ -267,7 +267,10 @@ private struct NotableAppsSection: View {
     @EnvironmentObject var store: MonitorCenter
 
     private var activeGroups: [ProcessGroupInfo] {
-        store.notableApps.filter { !$0.anyStopped }
+        let pausedKeys = Set(store.pausedTasks.map(\.groupKey))
+        return store.notableApps.filter { group in
+            !group.anyStopped && !pausedKeys.contains(group.key)
+        }
     }
 
     var body: some View {
