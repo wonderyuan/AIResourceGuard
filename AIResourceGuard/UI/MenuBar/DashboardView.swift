@@ -341,6 +341,7 @@ private struct PausedTaskRow: View {
     let task: PausedTask
     @EnvironmentObject var store: MonitorCenter
     @State private var tapFlash = false
+    @State private var confirmTerminate = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -355,31 +356,56 @@ private struct PausedTaskRow: View {
                     .foregroundStyle(.tertiary)
             }
             Spacer()
-            // Resume button
-            HStack(spacing: 5) {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 11, weight: .medium))
-                Text("恢复")
-                    .font(.callout)
-                    .fontWeight(.medium)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .background(tapFlash ? Color.green.opacity(0.3) : Color.green.opacity(0.15),
-                        in: RoundedRectangle(cornerRadius: 8))
-            .foregroundStyle(.green)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                withAnimation(.easeOut(duration: 0.1)) { tapFlash = true }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    withAnimation(.easeIn(duration: 0.2)) { tapFlash = false }
+
+            if confirmTerminate {
+                // Two-click confirm (no dialog — dialogs close the popover)
+                tapButton("确认终止", icon: "exclamationmark.triangle.fill",
+                          bg: .red.opacity(0.15), fg: .red) {
+                    confirmTerminate = false
+                    store.protection.terminatePausedTask(task)
                 }
-                // Resume via the controller (removes from ledger)
-                store.protection.resumePausedTask(task)
+                tapButton("取消", icon: "xmark",
+                          bg: Color(nsColor: .quaternaryLabelColor), fg: .secondary) {
+                    confirmTerminate = false
+                }
+            } else {
+                tapButton("恢复", icon: "play.fill",
+                          bg: .green.opacity(0.15), fg: .green) {
+                    store.protection.resumePausedTask(task)
+                }
+                tapButton("终止", icon: "xmark",
+                          bg: .red.opacity(0.1), fg: .red) {
+                    confirmTerminate = true
+                }
             }
         }
         .padding(.vertical, 4)
-        .opacity(0.75)
+        .opacity(0.85)
+    }
+
+    private func tapButton(_ title: String, icon: String,
+                           bg: Color, fg: Color,
+                           action: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 10, weight: .medium))
+            Text(title)
+                .font(.caption)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(tapFlash ? fg.opacity(0.3) : bg,
+                    in: RoundedRectangle(cornerRadius: 6))
+        .foregroundStyle(fg)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeOut(duration: 0.1)) { tapFlash = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                withAnimation(.easeIn(duration: 0.2)) { tapFlash = false }
+            }
+            action()
+        }
     }
 }
 

@@ -97,6 +97,30 @@ final class ProtectionController {
         onFeedback?("已恢复 \(task.displayName) 任务")
     }
 
+    /// Terminate a paused task: SIGCONT first (so SIGTERM can be delivered
+    /// — a SIGSTOPPED process cannot handle signals), then SIGTERM.
+    /// Removes from the ledger.
+    func terminatePausedTask(_ task: PausedTask) {
+        log.info("Ledger terminate: \(task.displayName, privacy: .public)")
+        var terminated = 0
+        for identity in task.identities {
+            guard identity.stillCurrent() else { continue }
+            kill(identity.pid, SIGCONT)  // unstop so SIGTERM works
+            usleep(10_000)
+            if kill(identity.pid, SIGTERM) == 0 {
+                terminated += 1
+            }
+        }
+        pausedTasks.removeAll { $0.groupKey == task.groupKey }
+        if terminated > 0 {
+            onFeedback?("已请求终止 \(task.displayName)（\(terminated) 个进程）")
+        }
+        history.record(HistoryEvent(
+            kind: "action",
+            summary: "[手动]终止 \(task.displayName)：\(terminated) 个进程已发送 SIGTERM（先 SIGCONT 解除暂停）",
+            detail: nil))
+    }
+
     /// Safety net: resume everything before the app terminates gracefully.
     func resumeAllForExit() {
         guard !pausedTasks.isEmpty else { return }
@@ -390,6 +414,14 @@ final class ProtectionController {
             guard decision.allowed else {
                 denied.append(decision.reason ?? "blocked by policy")
                 continue
+            }
+
+            // SIGTERM cannot be delivered to a SIGSTOPPED process — the
+            // signal stays pending until the process runs again. Send
+            // SIGCONT first so the terminate actually takes effect.
+            if action == .terminate && proc.isStopped {
+                kill(proc.pid, SIGCONT)
+                usleep(10_000) // 10ms for the process to resume
             }
 
             if kill(proc.pid, signal) == 0 {
